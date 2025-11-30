@@ -77,7 +77,7 @@ class Input(ABC):
             # Literal text before this capture
             literal = self.pattern[last_end:match.start()]
             glob_parts.append(literal)
-            regex_parts.append(re.escape(literal))
+            regex_parts.append(self._escape_for_regex(literal))
 
             # Replace capture with * for glob, named group for regex
             glob_parts.append('*')
@@ -88,10 +88,18 @@ class Input(ABC):
         # Trailing literal
         literal = self.pattern[last_end:]
         glob_parts.append(literal)
-        regex_parts.append(re.escape(literal))
+        regex_parts.append(self._escape_for_regex(literal))
 
         self._glob_pattern = ''.join(glob_parts)
         self._capture_regex = re.compile('^' + ''.join(regex_parts) + '$')
+
+    @staticmethod
+    def _escape_for_regex(s: str) -> str:
+        """Escape string for regex, but convert * wildcards to [^/]* pattern."""
+        # Split on *, escape each part, then join with [^/]*
+        parts = s.split('*')
+        escaped_parts = [re.escape(p) for p in parts]
+        return '[^/]*'.join(escaped_parts)
 
     @property
     def capture_names(self) -> List[str]:
