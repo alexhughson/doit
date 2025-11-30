@@ -52,6 +52,9 @@ from doit.deps import (
     Target, FileTarget,
 )
 
+# Taskgen subpackage for pattern-based task generation
+from doit import taskgen
+
 
 __all__ = [
     # Existing API
@@ -63,6 +66,8 @@ __all__ = [
     # Dependency and Target classes
     'Dependency', 'FileDependency', 'TaskDependency',
     'Target', 'FileTarget',
+    # Task generation
+    'taskgen',
 ]
 
 def get_initial_workdir():

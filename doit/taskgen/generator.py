@@ -113,11 +113,13 @@ class TaskGenerator:
             dependencies = input_set.get_all_dependencies()
 
             # Create task
+            # Note: We use outputs (Target objects) instead of targets (strings)
+            # to leverage the new extensible dependency system. The Task will
+            # derive string targets from the Target.get_key() method.
             yield Task(
                 name=self._render_name(input_set.attrs),
                 actions=actions,
                 dependencies=dependencies,
-                targets=output_paths,
                 outputs=output_targets,
                 doc=self._render_doc(input_set.attrs),
             )

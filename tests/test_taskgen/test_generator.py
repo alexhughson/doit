@@ -229,7 +229,7 @@ class TestTaskGeneratorTargets:
     """Tests for target/output handling."""
 
     def test_task_has_targets(self, tmp_path):
-        """Test that task includes string targets."""
+        """Test that task includes Target objects via outputs."""
         (tmp_path / "src").mkdir()
         (tmp_path / "src" / "main.c").write_text("code")
 
@@ -241,7 +241,9 @@ class TestTaskGeneratorTargets:
         )
 
         tasks = list(gen.generate())
-        assert tasks[0].targets == ["build/main.o"]
+        # TaskGenerator uses outputs (Target objects) instead of targets (strings)
+        assert len(tasks[0].outputs) == 1
+        assert "build/main.o" in tasks[0].outputs[0].get_key()
 
     def test_task_has_outputs(self, tmp_path):
         """Test that task includes Target objects."""
@@ -275,8 +277,11 @@ class TestTaskGeneratorTargets:
         )
 
         tasks = list(gen.generate())
-        assert tasks[0].targets == ["build/main.o", "build/main.d"]
+        # TaskGenerator uses outputs (Target objects) instead of targets (strings)
         assert len(tasks[0].outputs) == 2
+        keys = [o.get_key() for o in tasks[0].outputs]
+        assert any("build/main.o" in k for k in keys)
+        assert any("build/main.d" in k for k in keys)
 
 
 class TestTaskGeneratorDoc:
@@ -400,7 +405,6 @@ class TestTaskGeneratorEdgeCases:
 
         tasks = list(gen.generate())
         assert len(tasks) == 1
-        assert tasks[0].targets == []
         assert tasks[0].outputs == []
 
     def test_callable_action(self, tmp_path):
