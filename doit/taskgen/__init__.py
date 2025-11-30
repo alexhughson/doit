@@ -24,11 +24,15 @@ Classes:
     Input: ABC for input patterns (subclass for custom resource types)
     FileInput: Input pattern for local files
     S3Input: Input pattern for S3 objects (requires boto3)
+    DirectoryInput: Input pattern for directory prefixes
+    S3PrefixInput: Input pattern for S3 prefix (directory-like)
     CaptureMatch: A matched resource with captured attributes
 
     Output: ABC for output patterns (subclass for custom resource types)
     FileOutput: Output pattern for local files
     S3Output: Output pattern for S3 objects
+    DirectoryOutput: Output pattern for directory prefixes
+    S3PrefixOutput: Output pattern for S3 prefix (directory-like)
 
     InputSet: A grouped set of inputs sharing common attribute values
     TaskGenerator: Primary interface for pattern-based task generation
@@ -37,16 +41,16 @@ Functions:
     build_input_sets: Generate InputSets for all attribute permutations
 """
 
-from .inputs import Input, FileInput, S3Input, CaptureMatch
-from .outputs import Output, FileOutput, S3Output
+from .inputs import Input, FileInput, S3Input, DirectoryInput, S3PrefixInput, CaptureMatch
+from .outputs import Output, FileOutput, S3Output, DirectoryOutput, S3PrefixOutput
 from .groups import InputSet, build_input_sets
 from .generator import TaskGenerator
 
 __all__ = [
     # Input classes
-    'Input', 'FileInput', 'S3Input', 'CaptureMatch',
+    'Input', 'FileInput', 'S3Input', 'DirectoryInput', 'S3PrefixInput', 'CaptureMatch',
     # Output classes
-    'Output', 'FileOutput', 'S3Output',
+    'Output', 'FileOutput', 'S3Output', 'DirectoryOutput', 'S3PrefixOutput',
     # Grouping
     'InputSet', 'build_input_sets',
     # Generator

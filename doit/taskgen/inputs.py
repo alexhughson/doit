@@ -236,3 +236,98 @@ class S3Input(Input):
             self.bucket, resource_key,
             profile=self.profile, region=self.region
         )
+
+
+@dataclass
+class DirectoryInput(Input):
+    """Input pattern for a directory prefix.
+
+    Instead of listing individual files, this declares a dependency on
+    a directory as a whole. Files matching the pattern under the directory
+    are collected, but the dependency is on the directory itself.
+
+    This is useful when:
+    - You don't know exact filenames ahead of time
+    - A producer task outputs to a directory
+    - You want to match all files under a path prefix
+
+    Example:
+        DirectoryInput("data/raw/<dataset>/")  # depends on directory prefix
+        DirectoryInput("/output/<partition>/")  # depends on partition dir
+    """
+    base_path: Optional[Path] = None
+
+    def __post_init__(self):
+        if self.base_path is None:
+            self.base_path = Path.cwd()
+        elif isinstance(self.base_path, str):
+            self.base_path = Path(self.base_path)
+        super().__post_init__()
+        # Directory inputs always produce a single dependency
+        self.is_list = False
+
+    def list_resources(self) -> Generator[str, None, None]:
+        """Yield directory paths matching the glob pattern.
+
+        For directories, we match the directory path itself, not files under it.
+        """
+        # Remove any trailing file pattern - we want directories
+        dir_pattern = self._glob_pattern.rstrip('/')
+        if '*' not in dir_pattern:
+            # No wildcards - just yield the pattern as-is
+            yield str(self.base_path / dir_pattern)
+        else:
+            # Find directories matching the pattern
+            for path in self.base_path.glob(dir_pattern):
+                if path.is_dir():
+                    yield str(path)
+
+    def _get_match_key(self, resource_key: str) -> str:
+        """Return path relative to base_path for regex matching."""
+        return str(Path(resource_key).relative_to(self.base_path))
+
+    def create_dependency(self, resource_key: str) -> Any:
+        """Create a DirectoryDependency for the given path."""
+        from doit.deps import DirectoryDependency
+        return DirectoryDependency(resource_key)
+
+
+@dataclass
+class S3PrefixInput(Input):
+    """Input pattern for an S3 prefix (directory-like).
+
+    Instead of listing individual S3 objects, this declares a dependency
+    on a prefix. Objects matching the pattern under the prefix are collected,
+    but the dependency is on the prefix itself.
+
+    Example:
+        S3PrefixInput("raw/<dataset>/", bucket="my-bucket")
+    """
+    bucket: str = ""
+    profile: Optional[str] = None
+    region: Optional[str] = None
+
+    def __post_init__(self):
+        super().__post_init__()
+        # Prefix inputs always produce a single dependency
+        self.is_list = False
+
+    def list_resources(self) -> Generator[str, None, None]:
+        """Yield prefix keys matching the pattern.
+
+        For prefixes, we don't actually list S3 - we just yield the pattern.
+        The prefix represents a virtual directory that may or may not exist.
+        """
+        # Remove trailing wildcards - we want the prefix
+        prefix = self._glob_pattern.rstrip('/*')
+        if not prefix.endswith('/'):
+            prefix = prefix + '/'
+        yield prefix
+
+    def create_dependency(self, resource_key: str) -> Any:
+        """Create an S3PrefixDependency for the given prefix."""
+        from doit.deps import S3PrefixDependency
+        return S3PrefixDependency(
+            self.bucket, resource_key,
+            profile=self.profile, region=self.region
+        )

@@ -3,8 +3,8 @@
 import pytest
 from pathlib import Path
 
-from doit.taskgen.inputs import Input, FileInput, CaptureMatch
-from doit.deps import FileDependency
+from doit.taskgen.inputs import Input, FileInput, DirectoryInput, S3PrefixInput, CaptureMatch
+from doit.deps import FileDependency, DirectoryDependency, S3PrefixDependency
 
 
 class TestCaptureMatch:
@@ -233,3 +233,97 @@ class TestFileInputBasePath:
         """Test that base_path accepts a Path."""
         inp = FileInput("src/<module>.c", base_path=Path("/tmp/project"))
         assert inp.base_path == Path("/tmp/project")
+
+
+class TestDirectoryInput:
+    """Tests for DirectoryInput class."""
+
+    def test_creates_directory_dependency(self, tmp_path):
+        """Test that DirectoryInput creates DirectoryDependency."""
+        data_dir = tmp_path / "data"
+        data_dir.mkdir()
+
+        inp = DirectoryInput("data", base_path=tmp_path)
+        matches = list(inp.match())
+
+        assert len(matches) == 1
+        assert isinstance(matches[0].dependency, DirectoryDependency)
+
+    def test_is_list_always_false(self):
+        """Test that DirectoryInput always has is_list=False."""
+        inp = DirectoryInput("data/<dataset>/")
+        assert inp.is_list is False
+
+    def test_pattern_with_capture(self, tmp_path):
+        """Test pattern with capture extracts directory name."""
+        for dataset in ["train", "test"]:
+            (tmp_path / "data" / dataset).mkdir(parents=True)
+
+        inp = DirectoryInput("data/<dataset>", base_path=tmp_path)
+        matches = list(inp.match())
+
+        assert len(matches) == 2
+        captured = {m.captures["dataset"] for m in matches}
+        assert captured == {"train", "test"}
+
+    def test_pattern_without_wildcard(self, tmp_path):
+        """Test pattern without wildcards yields single directory."""
+        (tmp_path / "output").mkdir()
+
+        inp = DirectoryInput("output", base_path=tmp_path)
+        matches = list(inp.match())
+
+        assert len(matches) == 1
+        assert "output" in matches[0].key
+
+    def test_dependency_key_has_trailing_slash(self, tmp_path):
+        """Test that created dependency key has trailing slash."""
+        (tmp_path / "data").mkdir()
+
+        inp = DirectoryInput("data", base_path=tmp_path)
+        matches = list(inp.match())
+
+        dep = matches[0].dependency
+        assert dep.get_key().endswith('/')
+
+
+class TestS3PrefixInput:
+    """Tests for S3PrefixInput class."""
+
+    def test_creates_s3_prefix_dependency(self):
+        """Test that S3PrefixInput creates S3PrefixDependency."""
+        inp = S3PrefixInput("data/raw/", bucket="my-bucket")
+        matches = list(inp.match())
+
+        assert len(matches) == 1
+        assert isinstance(matches[0].dependency, S3PrefixDependency)
+
+    def test_is_list_always_false(self):
+        """Test that S3PrefixInput always has is_list=False."""
+        inp = S3PrefixInput("data/<partition>/", bucket="bucket")
+        assert inp.is_list is False
+
+    def test_pattern_yields_prefix(self):
+        """Test that list_resources yields the prefix."""
+        inp = S3PrefixInput("data/processed/", bucket="bucket")
+        resources = list(inp.list_resources())
+
+        assert len(resources) == 1
+        assert resources[0] == "data/processed/"
+
+    def test_pattern_normalizes_trailing_slash(self):
+        """Test that prefix is normalized to have trailing slash."""
+        inp = S3PrefixInput("data/raw", bucket="bucket")
+        resources = list(inp.list_resources())
+
+        assert resources[0].endswith('/')
+
+    def test_dependency_stores_bucket_and_credentials(self):
+        """Test that dependency stores bucket and optional credentials."""
+        inp = S3PrefixInput("data/", bucket="my-bucket", profile="dev", region="us-west-2")
+        matches = list(inp.match())
+
+        dep = matches[0].dependency
+        assert dep.bucket == "my-bucket"
+        assert dep.profile == "dev"
+        assert dep.region == "us-west-2"

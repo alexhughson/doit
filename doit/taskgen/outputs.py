@@ -103,3 +103,53 @@ class S3Output(Output):
             self.bucket, rendered_path,
             profile=self.profile, region=self.region
         )
+
+
+@dataclass
+class DirectoryOutput(Output):
+    """Output pattern for a directory prefix.
+
+    Instead of declaring a specific file output, this declares that the
+    task outputs files to a directory. This enables prefix matching where
+    downstream tasks that depend on files under this directory automatically
+    depend on this task.
+
+    This is useful when:
+    - A task creates multiple files with unknown names
+    - Files are named dynamically at runtime
+    - You want downstream tasks to match by prefix
+
+    Example:
+        DirectoryOutput("build/<arch>/")
+        DirectoryOutput("/output/<partition>/processed/")
+    """
+
+    def create_target(self, rendered_path: str) -> Any:
+        """Create a DirectoryTarget for the rendered path."""
+        from doit.deps import DirectoryTarget
+        return DirectoryTarget(rendered_path)
+
+
+@dataclass
+class S3PrefixOutput(Output):
+    """Output pattern for an S3 prefix (directory-like).
+
+    Instead of declaring a specific S3 object output, this declares that
+    the task outputs objects to a prefix. This enables prefix matching
+    where downstream tasks that depend on objects under this prefix
+    automatically depend on this task.
+
+    Example:
+        S3PrefixOutput("processed/<dataset>/", bucket="my-bucket")
+    """
+    bucket: str = ""
+    profile: Optional[str] = None
+    region: Optional[str] = None
+
+    def create_target(self, rendered_path: str) -> Any:
+        """Create an S3PrefixTarget for the rendered prefix."""
+        from doit.deps import S3PrefixTarget
+        return S3PrefixTarget(
+            self.bucket, rendered_path,
+            profile=self.profile, region=self.region
+        )
