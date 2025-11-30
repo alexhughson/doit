@@ -525,6 +525,107 @@ A build system that compiles source files:
                 print(f"Up-to-date: {task.name}")
 
 
+Dependency Objects
+==================
+
+For programmatic task definition, you can use dependency objects instead of
+string-based ``file_dep`` and ``task_dep``. This enables custom dependency types
+like S3 files or database rows.
+
+.. code-block:: python
+
+    from doit import DoitEngine, FileDependency, TaskDependency, FileTarget
+    from doit.task import Task
+
+    tasks = [
+        Task(
+            'setup',
+            actions=['echo "Setting up..."'],
+        ),
+        Task(
+            'compile',
+            actions=['gcc -o main main.c'],
+            dependencies=[
+                FileDependency('main.c'),
+                FileDependency('header.h'),
+                TaskDependency('setup'),
+            ],
+            targets=['main'],
+        ),
+    ]
+
+    with DoitEngine(tasks) as engine:
+        for task in engine:
+            if task.should_run:
+                task.execute_and_submit()
+
+
+Dependency Classes
+------------------
+
+**FileDependency**
+    Local file dependency with configurable change detection.
+
+    - ``path`` - File path (relative or absolute)
+    - ``checker`` - "md5" (default) or "timestamp"
+
+    .. code-block:: python
+
+        FileDependency('src/main.c')
+        FileDependency('data.csv', checker='timestamp')
+
+**TaskDependency**
+    Dependency on another task's execution. Controls order only, does NOT
+    affect up-to-date status.
+
+    .. code-block:: python
+
+        TaskDependency('setup')
+        TaskDependency('build:lib')  # subtask
+
+
+Target Classes
+--------------
+
+**FileTarget**
+    Local file target (output). Used for implicit task dependency matching.
+
+    .. code-block:: python
+
+        FileTarget('build/main.o')
+
+
+Custom Dependencies
+-------------------
+
+You can create custom dependency types by subclassing ``Dependency``:
+
+.. code-block:: python
+
+    from dataclasses import dataclass
+    from doit.deps import Dependency
+
+    @dataclass
+    class S3Dependency(Dependency):
+        bucket: str
+        key: str
+
+        def get_key(self) -> str:
+            return f"s3://{self.bucket}/{self.key}"
+
+        def is_modified(self, stored_state) -> bool:
+            # Check S3 ETag/LastModified
+            ...
+
+        def get_state(self, current_state):
+            # Return state to save
+            ...
+
+        def exists(self) -> bool:
+            # Check if S3 object exists
+            ...
+
+
 See Also
 ========
 

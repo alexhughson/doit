@@ -46,6 +46,12 @@ from doit.engine import (
 # State storage (for advanced usage)
 from doit.dependency import InMemoryStateStore
 
+# Dependency and Target classes for programmatic task definition
+from doit.deps import (
+    Dependency, FileDependency, TaskDependency,
+    Target, FileTarget,
+)
+
 
 __all__ = [
     # Existing API
@@ -54,6 +60,9 @@ __all__ = [
     'DoitEngine', 'TaskWrapper', 'TaskStatus', 'create_task_iterator',
     # State storage
     'InMemoryStateStore',
+    # Dependency and Target classes
+    'Dependency', 'FileDependency', 'TaskDependency',
+    'Target', 'FileTarget',
 ]
 
 def get_initial_workdir():

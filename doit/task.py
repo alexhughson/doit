@@ -12,6 +12,7 @@ from .cmdparse import CmdOption, TaskParse, normalize_option
 from .exceptions import BaseFail, InvalidTask
 from .action import create_action, PythonAction
 from .dependency import UptodateCalculator, StorageKey
+from .deps import Dependency, FileDependency, TaskDependency
 
 
 def first_line(doc):
@@ -164,7 +165,8 @@ class Task(object):
                   'getargs': ((dict,), ()),
                   'title': ((Callable,), (None,)),
                   'watch': ((list, tuple), ()),
-                  'meta': ((dict,), (None,))
+                  'meta': ((dict,), (None,)),
+                  'dependencies': ((list, tuple), ()),
                   }
 
 
@@ -174,7 +176,7 @@ class Task(object):
                  subtask_of=None, has_subtask=False,
                  doc=None, params=(), pos_arg=None,
                  verbosity=None, io=None, title=None, getargs=None,
-                 watch=(), meta=None, loader=None):
+                 watch=(), meta=None, loader=None, dependencies=()):
         """sanity checks and initialization
 
         @param params: (list of dict for parameters) see cmdparse.CmdOption
@@ -200,6 +202,8 @@ class Task(object):
         self.check_attr(name, 'title', title, self.valid_attr['title'])
         self.check_attr(name, 'watch', watch, self.valid_attr['watch'])
         self.check_attr(name, 'meta', meta, self.valid_attr['meta'])
+        self.check_attr(name, 'dependencies', dependencies,
+                        self.valid_attr['dependencies'])
 
         if '=' in name:
             msg = "Task '{}': name must not use the char '=' (equal sign)."
@@ -220,7 +224,7 @@ class Task(object):
         else:
             self._actions = list(actions[:])
 
-        self._init_deps(file_dep, task_dep, calc_dep)
+        self._init_deps(file_dep, task_dep, calc_dep, dependencies)
 
         # loaders create an implicity task_dep
         self.loader = loader
@@ -261,15 +265,19 @@ class Task(object):
         self.executed = False
 
 
-    def _init_deps(self, file_dep, task_dep, calc_dep):
+    def _init_deps(self, file_dep, task_dep, calc_dep, dependencies):
         """init for dependency related attributes"""
         self.dep_changed = None
 
-        # file_dep
+        # New-style dependencies (Dependency objects)
+        self._dependencies = []
+        self._init_dependencies(dependencies)
+
+        # file_dep (legacy string-based)
         self.file_dep = set()
         self._expand_file_dep(file_dep)
 
-        # task_dep
+        # task_dep (legacy string-based)
         self.task_dep = []
         self.wild_dep = []
         if task_dep:
@@ -279,6 +287,21 @@ class Task(object):
         self.calc_dep = set()
         if calc_dep:
             self._expand_calc_dep(calc_dep)
+
+    def _init_dependencies(self, dependencies):
+        """Initialize new-style dependencies list from Dependency objects."""
+        for dep in dependencies:
+            if isinstance(dep, Dependency):
+                self._dependencies.append(dep)
+            else:
+                msg = ("%s. dependencies must be Dependency objects. "
+                       "Got '%r' (%s)")
+                raise InvalidTask(msg % (self.name, dep, type(dep)))
+
+    @property
+    def dependencies(self):
+        """Return list of Dependency objects."""
+        return self._dependencies
 
 
     def _init_targets(self, items):
