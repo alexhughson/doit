@@ -149,8 +149,9 @@ class Task(object):
     valid_attr = {'basename': (string_types, ()),
                   'name': (string_types, ()),
                   'actions': ((list, tuple), (None,)),
-                  'file_dep': ((list, tuple), ()),
-                  'task_dep': ((list, tuple), ()),
+                  'dependencies': ((list, tuple), ()),
+                  'file_dep': ((list, tuple, set), ()),  # legacy dict format
+                  'task_dep': ((list, tuple), ()),       # legacy dict format
                   'uptodate': ((list, tuple), ()),
                   'calc_dep': ((list, tuple), ()),
                   'targets': ((list, tuple), ()),
@@ -166,17 +167,16 @@ class Task(object):
                   'title': ((Callable,), (None,)),
                   'watch': ((list, tuple), ()),
                   'meta': ((dict,), (None,)),
-                  'dependencies': ((list, tuple), ()),
                   }
 
 
-    def __init__(self, name, actions, file_dep=(), targets=(),
-                 task_dep=(), uptodate=(),
+    def __init__(self, name, actions, dependencies=(), targets=(),
+                 uptodate=(),
                  calc_dep=(), setup=(), clean=(), teardown=(),
                  subtask_of=None, has_subtask=False,
                  doc=None, params=(), pos_arg=None,
                  verbosity=None, io=None, title=None, getargs=None,
-                 watch=(), meta=None, loader=None, dependencies=()):
+                 watch=(), meta=None, loader=None):
         """sanity checks and initialization
 
         @param params: (list of dict for parameters) see cmdparse.CmdOption
@@ -185,8 +185,8 @@ class Task(object):
         getargs = getargs or {}  # default
         self.check_attr(name, 'name', name, self.valid_attr['name'])
         self.check_attr(name, 'actions', actions, self.valid_attr['actions'])
-        self.check_attr(name, 'file_dep', file_dep, self.valid_attr['file_dep'])
-        self.check_attr(name, 'task_dep', task_dep, self.valid_attr['task_dep'])
+        self.check_attr(name, 'dependencies', dependencies,
+                        self.valid_attr['dependencies'])
         self.check_attr(name, 'uptodate', uptodate, self.valid_attr['uptodate'])
         self.check_attr(name, 'calc_dep', calc_dep, self.valid_attr['calc_dep'])
         self.check_attr(name, 'targets', targets, self.valid_attr['targets'])
@@ -202,8 +202,6 @@ class Task(object):
         self.check_attr(name, 'title', title, self.valid_attr['title'])
         self.check_attr(name, 'watch', watch, self.valid_attr['watch'])
         self.check_attr(name, 'meta', meta, self.valid_attr['meta'])
-        self.check_attr(name, 'dependencies', dependencies,
-                        self.valid_attr['dependencies'])
 
         if '=' in name:
             msg = "Task '{}': name must not use the char '=' (equal sign)."
@@ -224,12 +222,12 @@ class Task(object):
         else:
             self._actions = list(actions[:])
 
-        self._init_deps(file_dep, task_dep, calc_dep, dependencies)
+        self._init_deps(dependencies, calc_dep)
 
-        # loaders create an implicity task_dep
+        # loaders create an implicit task_dep
         self.loader = loader
         if self.loader and self.loader.task_dep:
-            self.task_dep.append(loader.task_dep)
+            self._dependencies.append(TaskDependency(loader.task_dep))
 
         uptodate = uptodate if uptodate else []
 
@@ -265,23 +263,14 @@ class Task(object):
         self.executed = False
 
 
-    def _init_deps(self, file_dep, task_dep, calc_dep, dependencies):
+    def _init_deps(self, dependencies, calc_dep):
         """init for dependency related attributes"""
         self.dep_changed = None
 
-        # New-style dependencies (Dependency objects)
+        # Dependencies (Dependency objects)
         self._dependencies = []
+        self.wild_dep = []  # Wildcard task deps like "task:*"
         self._init_dependencies(dependencies)
-
-        # file_dep (legacy string-based)
-        self.file_dep = set()
-        self._expand_file_dep(file_dep)
-
-        # task_dep (legacy string-based)
-        self.task_dep = []
-        self.wild_dep = []
-        if task_dep:
-            self._expand_task_dep(task_dep)
 
         # calc_dep
         self.calc_dep = set()
@@ -289,10 +278,14 @@ class Task(object):
             self._expand_calc_dep(calc_dep)
 
     def _init_dependencies(self, dependencies):
-        """Initialize new-style dependencies list from Dependency objects."""
+        """Initialize dependencies list from Dependency objects."""
         for dep in dependencies:
             if isinstance(dep, Dependency):
-                self._dependencies.append(dep)
+                # Handle wildcard task deps
+                if isinstance(dep, TaskDependency) and "*" in dep.task_name:
+                    self.wild_dep.append(dep.task_name)
+                else:
+                    self._dependencies.append(dep)
             else:
                 msg = ("%s. dependencies must be Dependency objects. "
                        "Got '%r' (%s)")
@@ -303,6 +296,41 @@ class Task(object):
         """Return list of Dependency objects."""
         return self._dependencies
 
+    @property
+    def file_dep(self):
+        """Return set of file dependency paths (for backward compatibility).
+
+        Returns the original paths (may be relative) to maintain compatibility
+        with implicit task dependency resolution (target->file_dep matching).
+        """
+        return {d.path for d in self._dependencies
+                if isinstance(d, FileDependency)}
+
+    @property
+    def task_dep(self):
+        """Return list of task dependency names (for backward compatibility)."""
+        return [d.task_name for d in self._dependencies
+                if isinstance(d, TaskDependency)]
+
+    def add_task_dep(self, task_name):
+        """Add an implicit task dependency (e.g., from target->file_dep matching)."""
+        if task_name not in self.task_dep:
+            self._dependencies.append(TaskDependency(task_name))
+
+    def add_file_dep(self, file_path):
+        """Add a file dependency dynamically (e.g., from an action)."""
+        if file_path not in self.file_dep:
+            self._dependencies.append(FileDependency(file_path))
+
+    def clear_task_deps(self):
+        """Remove all task dependencies (used by --single mode)."""
+        self._dependencies = [d for d in self._dependencies
+                              if not isinstance(d, TaskDependency)]
+
+    def clear_file_deps(self):
+        """Remove all file dependencies (used for regex target matching)."""
+        self._dependencies = [d for d in self._dependencies
+                              if not isinstance(d, FileDependency)]
 
     def _init_targets(self, items):
         """convert valid targets to `str`"""
@@ -346,47 +374,64 @@ class Task(object):
         return uptodate
 
 
-    def _expand_file_dep(self, file_dep):
-        """put input into file_dep"""
-        for dep in file_dep:
-            if isinstance(dep, str):
-                self.file_dep.add(dep)
-            elif isinstance(dep, PurePath):
-                self.file_dep.add(str(dep))
-            else:
-                msg = ("%s. file_dep must be a str or Path from pathlib. "
-                       "Got '%r' (%s)")
-                raise InvalidTask(msg % (self.name, dep, type(dep)))
-
-
-    def _expand_task_dep(self, task_dep):
-        """convert task_dep input into actaul task_dep and wild_dep"""
-        for dep in task_dep:
-            if "*" in dep:
-                self.wild_dep.append(dep)
-            else:
-                self.task_dep.append(dep)
-
-
     def _expand_calc_dep(self, calc_dep):
         """calc_dep input"""
         for dep in calc_dep:
             if dep not in self.calc_dep:
                 self.calc_dep.add(dep)
 
-
     def _extend_uptodate(self, uptodate):
         """add/extend uptodate values"""
         self.uptodate.extend(self._init_uptodate(uptodate))
 
+    def _extend_dependencies(self, dependencies):
+        """add/extend dependencies"""
+        for dep in dependencies:
+            if isinstance(dep, Dependency):
+                if isinstance(dep, TaskDependency) and "*" in dep.task_name:
+                    self.wild_dep.append(dep.task_name)
+                else:
+                    self._dependencies.append(dep)
+            else:
+                msg = ("%s. dependencies must be Dependency objects. "
+                       "Got '%r' (%s)")
+                raise InvalidTask(msg % (self.name, dep, type(dep)))
+
+    def _extend_file_dep(self, file_deps):
+        """Add file dependencies from calc_dep results (legacy format).
+
+        Converts string paths to FileDependency objects.
+        """
+        for dep in file_deps:
+            if isinstance(dep, str):
+                self._dependencies.append(FileDependency(dep))
+            elif isinstance(dep, PurePath):
+                self._dependencies.append(FileDependency(str(dep)))
+            else:
+                msg = ("%s. file_dep must be a str or Path. Got '%r' (%s)")
+                raise InvalidTask(msg % (self.name, dep, type(dep)))
+
+    def _extend_task_dep(self, task_deps):
+        """Add task dependencies from calc_dep results (legacy format).
+
+        Converts string task names to TaskDependency objects.
+        """
+        for dep in task_deps:
+            if isinstance(dep, str):
+                if "*" in dep:
+                    self.wild_dep.append(dep)
+                else:
+                    self._dependencies.append(TaskDependency(dep))
 
     # FIXME should support setup also
     _expand_map = {
-        'task_dep': _expand_task_dep,
-        'file_dep': _expand_file_dep,
+        'dependencies': _extend_dependencies,
         'calc_dep': _expand_calc_dep,
         'uptodate': _extend_uptodate,
+        'file_dep': _extend_file_dep,
+        'task_dep': _extend_task_dep,
     }
+
     def update_deps(self, deps):
         """expand all kinds of dep input"""
         for dep, dep_values in deps.items():
@@ -584,7 +629,50 @@ def dict_to_task(task_dict):
             name = task_dict['name']
             raise InvalidTask(f"Task {name} contains invalid field: '{key}'")
 
+    # Convert legacy file_dep/task_dep to dependencies
+    task_dict = _convert_legacy_deps(task_dict)
+
     return Task(**task_dict)
+
+
+def _convert_legacy_deps(task_dict):
+    """Convert legacy file_dep/task_dep dict keys to dependencies.
+
+    This maintains backward compatibility with dodo file format.
+    """
+    file_dep = task_dict.pop('file_dep', None)
+    task_dep = task_dict.pop('task_dep', None)
+
+    if file_dep is None and task_dep is None:
+        return task_dict
+
+    # Get existing dependencies or create empty list
+    deps = list(task_dict.get('dependencies', []))
+
+    # Convert file_dep strings to FileDependency objects
+    if file_dep:
+        for dep in file_dep:
+            if isinstance(dep, str):
+                deps.append(FileDependency(dep))
+            elif isinstance(dep, PurePath):
+                deps.append(FileDependency(str(dep)))
+            else:
+                name = task_dict.get('name', '<unknown>')
+                msg = "%s. file_dep must be a str or Path. Got '%r' (%s)"
+                raise InvalidTask(msg % (name, dep, type(dep)))
+
+    # Convert task_dep strings to TaskDependency objects
+    if task_dep:
+        for dep in task_dep:
+            if isinstance(dep, str):
+                deps.append(TaskDependency(dep))
+            else:
+                name = task_dict.get('name', '<unknown>')
+                msg = "%s. task_dep must be a str. Got '%r' (%s)"
+                raise InvalidTask(msg % (name, dep, type(dep)))
+
+    task_dict['dependencies'] = deps
+    return task_dict
 
 
 
@@ -624,7 +712,7 @@ class result_dep(UptodateCalculator):
         if self.setup_dep:
             task.setup_tasks.append(self.dep_name)
         else:
-            task.task_dep.append(self.dep_name)
+            task._dependencies.append(TaskDependency(self.dep_name))
 
 
     def _result_single(self):

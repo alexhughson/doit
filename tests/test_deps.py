@@ -215,20 +215,24 @@ class TestTaskWithDependencies:
         task = Task("empty", actions=["echo"])
         assert task.dependencies == []
 
-    def test_task_file_dep_legacy_separate(self, tmp_path):
-        """Legacy file_dep and new dependencies are separate."""
-        f1 = tmp_path / "new.txt"
-        f1.write_text("new")
+    def test_multiple_dependencies(self, tmp_path):
+        """Task can have multiple dependencies."""
+        f1 = tmp_path / "file1.txt"
+        f1.write_text("one")
+        f2 = tmp_path / "file2.txt"
+        f2.write_text("two")
 
         task = Task(
-            "mixed",
+            "multi",
             actions=["echo"],
-            file_dep=["old.txt"],  # Legacy
-            dependencies=[FileDependency(str(f1))],  # New
+            dependencies=[FileDependency(str(f1)),
+                          FileDependency(str(f2)),
+                          TaskDependency("other")],
         )
 
-        assert "old.txt" in task.file_dep
-        assert len(task.dependencies) == 1
+        assert len(task.file_dep) == 2
+        assert len(task.task_dep) == 1
+        assert len(task.dependencies) == 3
 
 
 class TestUpToDateCheckerWithDependencies:

@@ -347,7 +347,7 @@ def _generate_task_from_yield(tasks, func_name, task_dict, gen_doc):
         else:
             group_task = Task(basename, None, doc=gen_doc, has_subtask=True)
             tasks[basename] = group_task
-        group_task.task_dep.append(sub_task.name)
+        group_task.add_task_dep(sub_task.name)
         tasks[sub_task.name] = sub_task
     # NOT a sub-task
     else:

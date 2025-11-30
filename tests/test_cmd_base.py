@@ -8,6 +8,7 @@ from doit.cmdparse import CmdParseError, CmdParse
 from doit.exceptions import InvalidCommand, InvalidDodoFile
 from doit.dependency import FileChangedChecker, JSONCodec
 from doit.task import Task
+from doit.deps import FileDependency, TaskDependency
 from doit.loader import task_params
 from doit.cmd.base import version_tuple, Command, DoitCmdBase
 from doit.cmd.base import get_loader, ModuleTaskLoader, DodoTaskLoader
@@ -398,7 +399,7 @@ class TestCheckTasksExist(object):
     def test_valid(self):
         tasks = {
             't1': Task("t1", [""] ),
-            't2': Task("t2", [""], task_dep=['t1']),
+            't2': Task("t2", [""], dependencies=[TaskDependency('t1')]),
             }
         check_tasks_exist(tasks, ['t2'])
         # nothing is raised
@@ -409,9 +410,9 @@ class TestTaskAndDepsIter(object):
     def test_dep_iter(self):
         tasks = {
             't1': Task("t1", [""] ),
-            't2': Task("t2", [""], task_dep=['t1']),
+            't2': Task("t2", [""], dependencies=[TaskDependency('t1')]),
             't3': Task("t3", [""], setup=['t1']),
-            't4': Task("t4", [""], task_dep=['t3']),
+            't4': Task("t4", [""], dependencies=[TaskDependency('t3')]),
             }
         def names(sel_tasks, repeated=False):
             task_list = tasks_and_deps_iter(tasks, sel_tasks, repeated)
@@ -439,7 +440,9 @@ class TestSubtaskIter(object):
         tasks = {
             't1': Task("t1", [""] ),
             't1:x': Task("t1:x", [""], subtask_of='t1'),
-            't2': Task("t2", [""], task_dep=['t1', 't1:x', 't2:a', 't2:b']),
+            't2': Task("t2", [""], dependencies=[
+                TaskDependency('t1'), TaskDependency('t1:x'),
+                TaskDependency('t2:a'), TaskDependency('t2:b')]),
             't2:a': Task("t2:a", [""], subtask_of='t2'),
             't2:b': Task("t2:b", [""], subtask_of='t2'),
             }

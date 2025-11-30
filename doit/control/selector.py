@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Sequence
 
 from ..exceptions import InvalidCommand
 from ..task import Task
+from ..deps import FileDependency
 
 if TYPE_CHECKING:
     from collections import OrderedDict
@@ -193,7 +194,8 @@ class TaskSelector:
             loader.basename = task.name
             name = f'_regex_target_{filter_}:{task.name}'
             loader.regex_groups[name] = regex_group
-            self._tasks[name] = Task(name, None, loader=loader, file_dep=[filter_])
+            self._tasks[name] = Task(name, None, loader=loader,
+                                      dependencies=[FileDependency(filter_)])
             selected.append(name)
 
         return selected

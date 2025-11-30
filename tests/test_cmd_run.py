@@ -51,7 +51,7 @@ class TestCmdRun(object):
         output = StringIO()
         task_list = tasks_sample()
         assert task_list[4].name == 'g1.b'
-        task_list[4].task_dep = ['t3']
+        task_list[4].add_task_dep('t3')
         cmd_run = CmdFactory(Run, backend='dbm', dep_file=depfile_name,
                              task_list=task_list, sel_tasks=["g1"])
         cmd_run._execute(output, single=True)

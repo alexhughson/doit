@@ -2,6 +2,7 @@
 import pytest
 
 from doit.task import Task
+from doit.deps import FileDependency, TaskDependency
 from doit.control import ExecNode
 from doit.control.types import TaskRunStatus
 from doit.dependency import Dependency, DbmDB
@@ -334,7 +335,7 @@ class TestTaskWrapperInMemory:
     def test_multiple_tasks(self, memory_dep_manager):
         """Test multiple tasks with dependencies."""
         t1 = Task("task1", [action_success])
-        t2 = Task("task2", [action_success], task_dep=['task1'])
+        t2 = Task("task2", [action_success], dependencies=[TaskDependency('task1')])
 
         tasks_dict = {t1.name: t1, t2.name: t2}
 

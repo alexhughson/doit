@@ -57,7 +57,8 @@ class TaskControl(object):
         # expand wild-card task-dependencies
         for task in self.tasks.values():
             for pattern in task.wild_dep:
-                task.task_dep.extend(self._get_wild_tasks(pattern))
+                for wild_task in self._get_wild_tasks(pattern):
+                    task.add_task_dep(wild_task)
 
         self._check_dep_names()
         self.set_implicit_deps(self.targets, task_list)
@@ -112,8 +113,8 @@ class TaskControl(object):
         @param dep_list: (list - str): list of file_dep for task
         """
         for dep in deps_list:
-            if (dep in targets and targets[dep] not in task.task_dep):
-                task.task_dep.append(targets[dep])
+            if dep in targets:
+                task.add_task_dep(targets[dep])
 
 
     def _get_wild_tasks(self, pattern):
@@ -430,7 +431,7 @@ class TaskDispatcher(object):
             # remove file_dep since generated tasks are not required
             # to really create the target (support multiple matches)
             if regex_group:
-                this_task.file_dep = {}
+                this_task.clear_file_deps()
                 if regex_group.target in self.targets:
                     regex_group.found = True
                 else:

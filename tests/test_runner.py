@@ -7,7 +7,9 @@ import pytest
 from doit.exceptions import BaseFail, InvalidTask
 from doit.dependency import DbmDB, Dependency
 from doit.reporter import ConsoleReporter
-from doit.task import Task, DelayedLoader
+from doit.task import Task
+from doit.deps import FileDependency, TaskDependency
+from doit.task import DelayedLoader
 from doit.control import TaskControl
 from doit import runner
 
@@ -122,7 +124,7 @@ class TestRunner_TaskExecution(object):
     def test_DependencyError(self, reporter, dep_manager):
         """Task with missing file_dep fails."""
         t1 = Task("taskX", [(my_print, ["out a"])],
-                  file_dep=["i_dont_exist"])
+                  dependencies=[FileDependency("i_dont_exist")])
         tc = make_task_control([t1])
         my_runner = runner.Runner(dep_manager, reporter)
         result = my_runner.run_all(tc)
@@ -132,7 +134,8 @@ class TestRunner_TaskExecution(object):
 
     def test_upToDate(self, reporter, dep_manager):
         """Task that is up-to-date gets skipped."""
-        t1 = Task("taskX", [(my_print, ["out a"])], file_dep=[__file__])
+        t1 = Task("taskX", [(my_print, ["out a"])],
+                  dependencies=[FileDependency(__file__)])
         dep_manager.save_success(t1)
         tc = make_task_control([t1])
         my_runner = runner.Runner(dep_manager, reporter)
@@ -258,7 +261,7 @@ def use_args(arg1):
 def make_args():
     return {'myarg': 1}
 def action_add_filedep(task, extra_dep):
-    task.file_dep.add(extra_dep)
+    task.add_file_dep(extra_dep)
 
 
 class TestRunner_run_all(object):
@@ -361,7 +364,7 @@ class TestRunner_run_all(object):
 
     def test_dependency_error_after_execution(self, dep_manager):
         t1 = Task("t1", [(my_print, ["out a"])],
-                  file_dep=["i_dont_exist"], targets=['not_there'])
+                  dependencies=[FileDependency("i_dont_exist")], targets=['not_there'])
         reporter = FakeReporter(with_exceptions=True)
         tc = make_task_control([t1])
         my_runner = runner.Runner(dep_manager, reporter)
@@ -381,7 +384,7 @@ class TestRunner_run_all(object):
         ff = open(depPath, "a")
         ff.write("xxx")
         ff.close()
-        dependencies = [depPath]
+        dependencies = [FileDependency(depPath)]
 
         filePath = os.path.join(os.path.dirname(__file__), "data", "target")
         ff = open(filePath, "a")
@@ -422,7 +425,7 @@ class TestRunner_run_all(object):
     def test_continue_dont_execute_parent_of_failed_task(self, reporter,
                                                          RunnerClass, dep_manager):
         t1 = Task("t1", [(_error,)])
-        t2 = Task("t2", [(ok,)], task_dep=['t1'])
+        t2 = Task("t2", [(ok,)], dependencies=[TaskDependency('t1')])
         t3 = Task("t3", [(ok,)])
         tc = make_task_control([t1, t2, t3])
         my_runner = RunnerClass(dep_manager, reporter, continue_=True)
@@ -441,8 +444,8 @@ class TestRunner_run_all(object):
         assert t1 in fail_tasks
 
     def test_continue_dep_error(self, reporter, RunnerClass, dep_manager):
-        t1 = Task("t1", [(ok,)], file_dep=['i_dont_exist'])
-        t2 = Task("t2", [(ok,)], task_dep=['t1'])
+        t1 = Task("t1", [(ok,)], dependencies=[FileDependency('i_dont_exist')])
+        t2 = Task("t2", [(ok,)], dependencies=[TaskDependency('t1')])
         tc = make_task_control([t1, t2])
         my_runner = RunnerClass(dep_manager, reporter, continue_=True)
         result = my_runner.run_all(tc)
@@ -455,7 +458,7 @@ class TestRunner_run_all(object):
 
     def test_continue_ignored_dep(self, reporter, RunnerClass, dep_manager):
         t1 = Task("t1", [(ok,)])
-        t2 = Task("t2", [(ok,)], task_dep=['t1'])
+        t2 = Task("t2", [(ok,)], dependencies=[TaskDependency('t1')])
         dep_manager.ignore(t1)
         tc = make_task_control([t1, t2])
         my_runner = RunnerClass(dep_manager, reporter, continue_=True)

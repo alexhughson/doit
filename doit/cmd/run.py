@@ -185,11 +185,11 @@ class Run(DoitCmdBase):
             for task_name in self.control.selected_tasks:
                 task = self.control.tasks[task_name]
                 if task.has_subtask:
-                    for task_name in task.task_dep:
-                        sub_task = self.control.tasks[task_name]
-                        sub_task.task_dep = []
+                    for dep_name in task.task_dep:
+                        sub_task = self.control.tasks[dep_name]
+                        sub_task.clear_task_deps()
                 else:
-                    task.task_dep = []
+                    task.clear_task_deps()
 
         # reporter
         if isinstance(reporter, str):

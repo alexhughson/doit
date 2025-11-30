@@ -664,21 +664,15 @@ class TaskState:
             else:
                 self.store.set(task.name, StorageKey.RESULT, get_md5(task.result))
 
-        # file-dep (legacy string-based)
+        # Save checker name for detecting checker changes
         self.store.set(task.name, StorageKey.CHECKER, self.checker.__class__.__name__)
-        for dep in task.file_dep:
-            state = self.checker.get_state(dep, self.store.get(task.name, dep))
-            if state is not None:
-                self.store.set(task.name, dep, state)
 
-        # save list of file_deps (legacy)
-        dep_keys = list(task.file_dep)
-
-        # Save new-style dependencies (Dependency objects)
+        # Save dependencies (Dependency objects)
         # Late import to avoid circular dependency
         from doit.deps import TaskDependency
 
-        for dep in getattr(task, 'dependencies', []):
+        dep_keys = []
+        for dep in task.dependencies:
             # TaskDependency has no state to save
             if isinstance(dep, TaskDependency):
                 continue
@@ -816,11 +810,14 @@ class UpToDateChecker:
         if not get_log and result.status == 'run':
             return result
 
+        # Late import to avoid circular dependency
+        from doit.deps import TaskDependency
+
         # no dependencies means it is never up to date.
-        # Check both legacy file_dep and new-style dependencies
-        has_file_deps = bool(task.file_dep) or any(
-            not hasattr(d, 'creates_task_dep') or d.creates_task_dep() is None
-            for d in getattr(task, 'dependencies', [])
+        # Check if we have any file dependencies (not task deps)
+        has_file_deps = any(
+            not isinstance(d, TaskDependency)
+            for d in task.dependencies
         )
         if not (has_file_deps or uptodate_result_list):
             if result.set_reason(DependencyReason.HAS_NO_DEPENDENCIES, True):
@@ -829,7 +826,8 @@ class UpToDateChecker:
         # if target file is not there, task is not up to date
         for targ in task.targets:
             if not self.checker.exists(targ):
-                task.dep_changed = list(task.file_dep)
+                task.dep_changed = [d.get_key() for d in task.dependencies
+                                    if not isinstance(d, TaskDependency)]
                 if result.add_reason(DependencyReason.MISSING_TARGET, targ):
                     return result
 
@@ -837,24 +835,20 @@ class UpToDateChecker:
         previous = self.store.get(task.name, StorageKey.CHECKER)
         checker_name = self.checker.__class__.__name__
         if previous and previous != checker_name:
-            task.dep_changed = list(task.file_dep)
+            task.dep_changed = [d.get_key() for d in task.dependencies
+                                if not isinstance(d, TaskDependency)]
             # remove all saved values otherwise they might be re-used
             self.store.remove(task.name)
             if result.set_reason(DependencyReason.CHECKER_CHANGED, (previous, checker_name)):
                 return result
 
-        # check for modified file_dep (compare both legacy and new-style)
-        # Late import to avoid circular dependency
-        from doit.deps import TaskDependency as TaskDep
-
+        # check for modified dependencies
         previous = self.store.get(task.name, StorageKey.DEPS)
         previous_set = set(previous) if previous else None
 
-        # Build current set of all dependency keys (legacy + new-style)
-        current_dep_keys = set(task.file_dep)
-        for dep in getattr(task, 'dependencies', []):
-            if not isinstance(dep, TaskDep):
-                current_dep_keys.add(dep.get_key())
+        # Build current set of dependency keys (excluding task deps)
+        current_dep_keys = {d.get_key() for d in task.dependencies
+                           if not isinstance(d, TaskDependency)}
 
         if previous_set and previous_set != current_dep_keys:
             if get_log:
@@ -864,26 +858,8 @@ class UpToDateChecker:
                 result.set_reason(DependencyReason.REMOVED_FILE_DEP, removed_files)
             result.status = 'run'
 
-        # list of file_dep that changed (legacy string-based)
-        check_modified = self.checker.check_modified
+        # Check dependencies (Dependency objects)
         changed = []
-        for dep in task.file_dep:
-            state = self.store.get(task.name, dep)
-            try:
-                file_stat = self.checker.info(dep)
-            except self.checker.CheckerError:
-                error_msg = "Dependent file '{}' does not exist.".format(dep)
-                result.error_reason = error_msg.format(dep)
-                if result.add_reason(DependencyReason.MISSING_FILE_DEP, dep, 'error'):
-                    return result
-            else:
-                if state is None or check_modified(dep, file_stat, state):
-                    changed.append(dep)
-
-        # Check new-style dependencies (Dependency objects)
-        # Late import to avoid circular dependency
-        from doit.deps import TaskDependency
-
         for dep in task.dependencies:
             # TaskDependency doesn't affect up-to-date status
             if isinstance(dep, TaskDependency):

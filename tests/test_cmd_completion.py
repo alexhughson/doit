@@ -5,6 +5,7 @@ from doit.exceptions import InvalidCommand
 from doit.cmdparse import CmdOption, normalize_option
 from doit.plugin import PluginDict
 from doit.task import Task
+from doit.deps import FileDependency, TaskDependency
 from doit.cmd.base import Command, DodoTaskLoader, TaskLoader2
 from doit.cmd.completion import TabCompletion
 from doit.cmd.help import Help
@@ -20,7 +21,8 @@ class FakeLoader2(TaskLoader2):
     def load_tasks(self, cmd, pos_args):
         task_list = [
             Task("t1", None, ),
-            Task("t2", None, task_dep=['t2:a'], has_subtask=True, ),
+            Task("t2", None, dependencies=[TaskDependency('t2:a')],
+                 has_subtask=True, ),
             Task("t2:a", None, subtask_of='t2'),
             ]
         return task_list

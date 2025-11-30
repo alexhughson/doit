@@ -4,6 +4,7 @@ import pytest
 
 from doit.exceptions import InvalidCommand
 from doit.task import Task
+from doit.deps import FileDependency, TaskDependency
 from doit.cmd.info import Info
 from doit.dependency import DependencyReason
 from .conftest import CmdFactory
@@ -13,7 +14,7 @@ class TestCmdInfo(object):
 
     def test_info_basic_attrs(self, dep_manager):
         output = StringIO()
-        task = Task("t1", [], file_dep=['tests/data/dependency1'],
+        task = Task("t1", [], dependencies=[FileDependency('tests/data/dependency1')],
                     doc="task doc", getargs={'a': ('x', 'y')}, verbosity=2,
                     meta={'a': ['b', 'c']})
         cmd = CmdFactory(Info, outstream=output,
@@ -28,7 +29,7 @@ class TestCmdInfo(object):
 
     def test_invalid_command_args(self, dep_manager):
         output = StringIO()
-        task = Task("t1", [], file_dep=['tests/data/dependency1'])
+        task = Task("t1", [], dependencies=[FileDependency('tests/data/dependency1')])
         cmd = CmdFactory(Info, outstream=output,
                          dep_file=dep_manager.name, task_list=[task])
         # fails if number of args != 1
@@ -37,7 +38,7 @@ class TestCmdInfo(object):
 
     def test_execute_status_run(self, dep_manager, dependency1):
         output = StringIO()
-        task = Task("t1", [], file_dep=['tests/data/dependency1'])
+        task = Task("t1", [], dependencies=[FileDependency('tests/data/dependency1')])
         cmd = CmdFactory(Info, outstream=output,
                          dep_file=dep_manager.name, task_list=[task],
                          dep_manager=dep_manager)
@@ -50,7 +51,7 @@ class TestCmdInfo(object):
 
     def test_hide_execute_status(self, dep_manager, dependency1):
         output = StringIO()
-        task = Task("t1", [], file_dep=['tests/data/dependency1'])
+        task = Task("t1", [], dependencies=[FileDependency('tests/data/dependency1')])
         cmd = CmdFactory(Info, outstream=output,
                          dep_manager=dep_manager, task_list=[task])
         return_val = cmd._execute(['t1'], hide_status=True)
@@ -61,7 +62,7 @@ class TestCmdInfo(object):
 
     def test_execute_status_uptodate(self, dep_manager, dependency1):
         output = StringIO()
-        task = Task("t1", [], file_dep=['tests/data/dependency1'])
+        task = Task("t1", [], dependencies=[FileDependency('tests/data/dependency1')])
         cmd = CmdFactory(Info, outstream=output,
                          dep_manager=dep_manager, task_list=[task])
         cmd.dep_manager.save_success(task)

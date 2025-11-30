@@ -8,6 +8,7 @@ from doit.exceptions import InvalidCommand
 from doit.cmdparse import DefaultUpdate
 from doit.dependency import JSONCodec
 from doit.task import Task
+from doit.deps import FileDependency, TaskDependency
 from doit.cmd.strace import Strace
 from .conftest import CmdFactory
 

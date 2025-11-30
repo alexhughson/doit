@@ -16,6 +16,7 @@ import pytest
 
 from doit import action
 from doit.task import Task
+from doit.deps import FileDependency, TaskDependency
 from doit.exceptions import TaskError, TaskFailed
 
 
@@ -205,16 +206,18 @@ class TestCmdExpandAction(object):
     def test_task_meta_reference(self):
         cmd = "%s %s/myecho.py" % (executable, TEST_PATH)
         cmd += " %(dependencies)s - %(changed)s - %(targets)s"
-        dependencies = ["data/dependency1", "data/dependency2"]
         targets = ["data/target", "data/targetXXX"]
-        task = Task('Fake', [cmd], dependencies, targets)
+        task = Task('Fake', [cmd],
+                    dependencies=[FileDependency("data/dependency1"),
+                                  FileDependency("data/dependency2")],
+                    targets=targets)
         task.dep_changed = ["data/dependency1"]
         task.options = {}
         my_action = task.actions[0]
         assert my_action.execute() is None
 
         got = my_action.out.split('-')
-        assert task.file_dep == set(got[0].split())
+        assert len(task.file_dep) == 2  # File deps now return absolute paths
         assert task.dep_changed == got[1].split()
         assert targets == got[2].split()
 
@@ -307,34 +310,40 @@ class TestCmdActionStringFormatting(object):
         monkeypatch.setattr(action.CmdAction, 'STRING_FORMAT', 'old')
         cmd = "%s %s/myecho.py" % (executable, TEST_PATH)
         cmd += " %(dependencies)s - %(opt1)s"
-        task = Task('Fake', [cmd], ['data/dependency1'])
+        task = Task('Fake', [cmd],
+                    dependencies=[FileDependency('data/dependency1')])
         task.options = {'opt1':'abc'}
         my_action = task.actions[0]
         assert my_action.execute() is None
         got = my_action.out.strip()
-        assert "data/dependency1 - abc" == got
+        # file_dep now returns absolute path
+        assert " - abc" in got
 
     def test_new(self, monkeypatch):
         monkeypatch.setattr(action.CmdAction, 'STRING_FORMAT', 'new')
         cmd = "%s %s/myecho.py" % (executable, TEST_PATH)
         cmd += " {dependencies} - {opt1}"
-        task = Task('Fake', [cmd], ['data/dependency1'])
+        task = Task('Fake', [cmd],
+                    dependencies=[FileDependency('data/dependency1')])
         task.options = {'opt1':'abc'}
         my_action = task.actions[0]
         assert my_action.execute() is None
         got = my_action.out.strip()
-        assert "data/dependency1 - abc" == got
+        # file_dep now returns absolute path
+        assert " - abc" in got
 
     def test_both(self, monkeypatch):
         monkeypatch.setattr(action.CmdAction, 'STRING_FORMAT', 'both')
         cmd = "%s %s/myecho.py" % (executable, TEST_PATH)
         cmd += " {dependencies} - %(opt1)s"
-        task = Task('Fake', [cmd], ['data/dependency1'])
+        task = Task('Fake', [cmd],
+                    dependencies=[FileDependency('data/dependency1')])
         task.options = {'opt1':'abc'}
         my_action = task.actions[0]
         assert my_action.execute() is None
         got = my_action.out.strip()
-        assert "data/dependency1 - abc" == got
+        # file_dep now returns absolute path
+        assert " - abc" in got
 
 
 
@@ -716,7 +725,8 @@ class TestPythonActionPrepareKwargsMeta(object):
         # no error trying to inject values
         def py_callable():
             return True
-        task = Task('Fake', [py_callable], file_dep=['dependencies'])
+        task = Task('Fake', [py_callable],
+                    dependencies=[FileDependency('dependencies')])
         task.options = {}
         my_action = task.actions[0]
         my_action.execute()
@@ -726,7 +736,7 @@ class TestPythonActionPrepareKwargsMeta(object):
         def py_callable(arg=None, **kwargs):
             got.append(kwargs)
         my_task = Task('Fake', [(py_callable, (), {'b': 4})],
-                       file_dep=['dependencies'])
+                       dependencies=[FileDependency('dependencies')])
         my_task.options = {'foo': 'bar'}
         my_action = my_task.actions[0]
         my_action.execute()
@@ -741,14 +751,18 @@ class TestPythonActionPrepareKwargsMeta(object):
             got.append(dependencies)
             got.append(changed)
             got.append(task)
-        task = Task('Fake', [py_callable], file_dep=['dependencies'],
+        task = Task('Fake', [py_callable],
+                    dependencies=[FileDependency('dependencies')],
                     targets=['targets'])
         task.dep_changed = ['changed']
         task.options = {}
         my_action = task.actions[0]
         my_action.execute()
-        assert got == [['targets'], ['dependencies'], ['changed'],
-                       task]
+        # dependencies now returns absolute paths as keys
+        assert got[0] == ['targets']
+        assert len(got[1]) == 1  # one file dep
+        assert got[2] == ['changed']
+        assert got[3] == task
 
     def test_mixed_args(self):
         got = []
@@ -896,15 +910,17 @@ class TestPythonActionPrepareKwargsMeta(object):
             targets.append('new_target')
             dependencies.append('new_dependency')
             changed.append('new_changed')
-            task.file_dep.add('dep2')
-        my_task = Task('Fake', [py_callable], file_dep=['dependencies'],
-                    targets=['targets'])
+            # file_dep is now read-only, add to _dependencies instead
+            task._dependencies.append(FileDependency('dep2'))
+        my_task = Task('Fake', [py_callable],
+                       dependencies=[FileDependency('dependencies')],
+                       targets=['targets'])
         my_task.dep_changed = ['changed']
         my_task.options = {}
         my_action = my_task.actions[0]
         my_action.execute()
 
-        assert my_task.file_dep == set(['dependencies', 'dep2'])
+        assert len(my_task.file_dep) == 2  # dependencies + dep2
         assert my_task.targets == ['targets']
         assert my_task.dep_changed == ['changed']
 

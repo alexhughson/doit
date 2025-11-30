@@ -4,6 +4,7 @@ import pytest
 
 from doit.exceptions import InvalidDodoFile, InvalidCommand
 from doit.task import Stream, InvalidTask, Task, DelayedLoader
+from doit.deps import FileDependency, TaskDependency
 from doit.control import TaskControl, TaskDispatcher, ExecNode
 from doit.control import no_none
 from doit.control.types import TaskRunStatus
@@ -19,8 +20,8 @@ class TestTaskControlInit(object):
         assert 2 == len(tc.tasks)
 
     def test_targetDependency(self):
-        t1 = Task("taskX", None,[],['intermediate'])
-        t2 = Task("taskY", None,['intermediate'],[])
+        t1 = Task("taskX", None, targets=['intermediate'])
+        t2 = Task("taskY", None, dependencies=[FileDependency('intermediate')])
         TaskControl([t1, t2])
         assert ['taskX'] == t2.task_dep
 
@@ -34,7 +35,7 @@ class TestTaskControlInit(object):
         pytest.raises(InvalidTask, TaskControl, [666])
 
     def test_userErrorTaskDependency(self):
-        tasks = [Task('wrong', None, task_dep=["typo"])]
+        tasks = [Task('wrong', None, dependencies=[TaskDependency("typo")])]
         pytest.raises(InvalidTask, TaskControl, tasks)
 
     def test_userErrorSetupTask(self):
@@ -48,14 +49,15 @@ class TestTaskControlInit(object):
 
 
     def test_wild(self):
-        tasks = [Task('t1',None, task_dep=['foo*']),
-                 Task('foo4',None,)]
+        tasks = [Task('t1', None, dependencies=[TaskDependency('foo*')]),
+                 Task('foo4', None,)]
         TaskControl(tasks)
         assert 'foo4' in tasks[0].task_dep
 
     def test_bug770150_task_dependency_from_target(self):
-        t1 = Task("taskX", None, file_dep=[], targets=['intermediate'])
-        t2 = Task("taskY", None, file_dep=['intermediate'], task_dep=['taskZ'])
+        t1 = Task("taskX", None, targets=['intermediate'])
+        t2 = Task("taskY", None, dependencies=[
+            FileDependency('intermediate'), TaskDependency('taskZ')])
         t3 = Task("taskZ", None)
         TaskControl([t1, t2, t3])
         assert ['taskZ', 'taskX'] == t2.task_dep
@@ -357,7 +359,8 @@ class TestTaskDispatcher_add_task(object):
         assert [tasks['t1']] == list(td._add_task(n1))
 
     def test_task_deps(self):
-        tasks = {'t1': Task('t1', None, task_dep=['t2', 't3']),
+        tasks = {'t1': Task('t1', None, dependencies=[
+                     TaskDependency('t2'), TaskDependency('t3')]),
                  't2': Task('t2', None),
                  't3': Task('t3', None),
                  }
@@ -376,7 +379,7 @@ class TestTaskDispatcher_add_task(object):
         assert tasks['t1'] == next(gen)
 
     def test_task_deps_already_created(self):
-        tasks = {'t1': Task('t1', None, task_dep=['t2']),
+        tasks = {'t1': Task('t1', None, dependencies=[TaskDependency('t2')]),
                  't2': Task('t2', None),
                  }
         td = TaskDispatcher(tasks, [], None)
@@ -389,7 +392,7 @@ class TestTaskDispatcher_add_task(object):
         assert tasks['t1'] == n1.step()
 
     def test_task_deps_no_wait(self):
-        tasks = {'t1': Task('t1', None, task_dep=['t2']),
+        tasks = {'t1': Task('t1', None, dependencies=[TaskDependency('t2')]),
                  't2': Task('t2', None),
                  }
         td = TaskDispatcher(tasks, [], None)
@@ -587,7 +590,7 @@ class TestTaskDispatcher_add_task(object):
 
         # file_dep is removed because foo might not be task
         # that creates this task (support for multi regex matches)
-        assert n6.file_dep == {}
+        assert n6.file_dep == set()
 
 
     def test_regex_group_already_created(self):
@@ -659,7 +662,7 @@ class TestTaskDispatcher_add_task(object):
 
 class TestTaskDispatcher_get_next_node(object):
     def test_none(self):
-        tasks = {'t1': Task('t1', None, task_dep=['t2']),
+        tasks = {'t1': Task('t1', None, dependencies=[TaskDependency('t2')]),
                  't2': Task('t2', None),
                  }
         td = TaskDispatcher(tasks, [], None)
@@ -676,7 +679,7 @@ class TestTaskDispatcher_get_next_node(object):
         assert 0 == len(ready)
 
     def test_to_run(self):
-        tasks = {'t1': Task('t1', None, task_dep=['t2']),
+        tasks = {'t1': Task('t1', None, dependencies=[TaskDependency('t2')]),
                  't2': Task('t2', None),
                  }
         td = TaskDispatcher(tasks, [], None)
@@ -699,7 +702,7 @@ class TestTaskDispatcher_get_next_node(object):
 
 class TestTaskDispatcher_update_waiting(object):
     def test_wait_select(self):
-        tasks = {'t1': Task('t1', None, task_dep=['t2']),
+        tasks = {'t1': Task('t1', None, dependencies=[TaskDependency('t2')]),
                  't2': Task('t2', None),
                  }
         td = TaskDispatcher(tasks, [], None)
@@ -712,7 +715,7 @@ class TestTaskDispatcher_update_waiting(object):
         assert deque([n2]) == td.ready
 
     def test_wait_run(self):
-        tasks = {'t1': Task('t1', None, task_dep=['t2']),
+        tasks = {'t1': Task('t1', None, dependencies=[TaskDependency('t2')]),
                  't2': Task('t2', None),
                  }
         td = TaskDispatcher(tasks, [], None)
@@ -727,7 +730,7 @@ class TestTaskDispatcher_update_waiting(object):
         assert 0 == len(td.waiting)
 
     def test_wait_run_deps_not_ok(self):
-        tasks = {'t1': Task('t1', None, task_dep=['t2']),
+        tasks = {'t1': Task('t1', None, dependencies=[TaskDependency('t2')]),
                  't2': Task('t2', None),
                  }
         td = TaskDispatcher(tasks, [], None)
@@ -742,7 +745,8 @@ class TestTaskDispatcher_update_waiting(object):
         assert 0 == len(td.waiting)
 
     def test_waiting_node_updated(self):
-        tasks = {'t1': Task('t1', None, calc_dep=['t2'], task_dep=['t4']),
+        tasks = {'t1': Task('t1', None, calc_dep=['t2'],
+                            dependencies=[TaskDependency('t4')]),
                  't2': Task('t2', None),
                  't3': Task('t3', None),
                  't4': Task('t4', None),
@@ -769,7 +773,7 @@ class TestTaskDispatcher_update_waiting(object):
 
 class TestTaskDispatcher_dispatcher_generator(object):
     def test_normal(self):
-        tasks = [Task("t1", None, task_dep=["t2"]),
+        tasks = [Task("t1", None, dependencies=[TaskDependency("t2")]),
                  Task("t2", None,)]
         control = TaskControl(tasks)
         control.process(['t1'])
@@ -788,7 +792,7 @@ class TestTaskDispatcher_dispatcher_generator(object):
             yield {'name': 'foo2', 'actions': None, 'targets': ['bar']}
 
         delayed_loader = DelayedLoader(creator, executed='t2')
-        tasks = [Task('t0', None, task_dep=['t1']),
+        tasks = [Task('t0', None, dependencies=[TaskDependency('t1')]),
                  Task('t1', None, loader=delayed_loader),
                  Task('t2', None)]
 

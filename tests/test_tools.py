@@ -7,6 +7,7 @@ from sys import executable
 import pytest
 
 from doit import exceptions
+from doit.deps import FileDependency, TaskDependency
 from doit import tools
 from doit import task
 
@@ -41,8 +42,10 @@ class TestTitleWithActions(object):
         assert "MyName => Cmd: MyAction" == t.title()
 
     def test_group(self):
-        t = task.Task("MyName", None, file_dep=['file_foo'],
-                      task_dep=['t1','t2'], title=tools.title_with_actions)
+        t = task.Task("MyName", None,
+                      dependencies=[FileDependency('file_foo'),
+                                    TaskDependency('t1'), TaskDependency('t2')],
+                      title=tools.title_with_actions)
         assert "MyName => Group: t1, t2" == t.title()
 
 

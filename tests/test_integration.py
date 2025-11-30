@@ -14,6 +14,7 @@ from pathlib import Path
 
 from doit import DoitEngine, TaskStatus
 from doit.task import Task
+from doit.deps import FileDependency, TaskDependency
 
 
 class Workspace:
@@ -68,11 +69,11 @@ class TestMultiStagePipeline:
 
         tasks = [
             Task('stage1', actions=[f'cat {src} | tr a-z A-Z > {stage1_out}'],
-                 file_dep=[str(src)], targets=[str(stage1_out)]),
+                 dependencies=[FileDependency(str(src))], targets=[str(stage1_out)]),
             Task('stage2', actions=[f'cat {stage1_out} | sed "s/$/!/" > {stage2_out}'],
-                 file_dep=[str(stage1_out)], targets=[str(stage2_out)]),
+                 dependencies=[FileDependency(str(stage1_out))], targets=[str(stage2_out)]),
             Task('final', actions=[f'cat {stage2_out} > {final_out}'],
-                 file_dep=[str(stage2_out)], targets=[str(final_out)]),
+                 dependencies=[FileDependency(str(stage2_out))], targets=[str(final_out)]),
         ]
 
         with ws.engine(tasks) as engine:
@@ -108,13 +109,13 @@ class TestMultiStagePipeline:
 
         tasks = [
             Task('a', actions=[log_and_copy('a', None, a_out)],
-                 file_dep=[str(source)], targets=[str(a_out)]),
+                 dependencies=[FileDependency(str(source))], targets=[str(a_out)]),
             Task('b', actions=[log_and_copy('b', a_out, b_out)],
-                 file_dep=[str(a_out)], targets=[str(b_out)]),
+                 dependencies=[FileDependency(str(a_out))], targets=[str(b_out)]),
             Task('c', actions=[log_and_copy('c', b_out, c_out)],
-                 file_dep=[str(b_out)], targets=[str(c_out)]),
+                 dependencies=[FileDependency(str(b_out))], targets=[str(c_out)]),
             Task('d', actions=[log_and_copy('d', c_out, d_out)],
-                 file_dep=[str(c_out)], targets=[str(d_out)]),
+                 dependencies=[FileDependency(str(c_out))], targets=[str(d_out)]),
         ]
 
         # First run - all tasks execute
@@ -158,11 +159,12 @@ class TestDependencyGraphs:
         tasks = [
             Task('a', actions=[f'echo "A" > {a_out}'], targets=[str(a_out)]),
             Task('b', actions=[f'cat {a_out} > {b_out} && echo "B" >> {b_out}'],
-                 file_dep=[str(a_out)], targets=[str(b_out)]),
+                 dependencies=[FileDependency(str(a_out))], targets=[str(b_out)]),
             Task('c', actions=[f'cat {a_out} > {c_out} && echo "C" >> {c_out}'],
-                 file_dep=[str(a_out)], targets=[str(c_out)]),
+                 dependencies=[FileDependency(str(a_out))], targets=[str(c_out)]),
             Task('d', actions=[f'cat {b_out} {c_out} > {d_out}'],
-                 file_dep=[str(b_out), str(c_out)], targets=[str(d_out)]),
+                 dependencies=[FileDependency(str(b_out)), FileDependency(str(c_out))],
+                 targets=[str(d_out)]),
         ]
 
         with ws.engine(tasks) as engine:
@@ -193,8 +195,8 @@ class TestDependencyGraphs:
         tasks = [
             Task('producer', actions=[producer], targets=[str(data_file)]),
             Task('consumer', actions=[f'cat {data_file} > {result_file} && echo "consumer" >> {execution_order}'],
-                 file_dep=[str(data_file)], targets=[str(result_file)],
-                 task_dep=['producer']),  # Explicit task_dep ensures ordering
+                 dependencies=[FileDependency(str(data_file)), TaskDependency('producer')],
+                 targets=[str(result_file)]),  # Explicit task_dep ensures ordering
         ]
 
         # Pre-create the data file (stale from "previous run")
@@ -245,9 +247,8 @@ class TestDynamicTaskInjection:
                         engine.add_task(Task(
                             f'process_{fname}',
                             actions=[f'cat {fpath} | tr a-z A-Z > {out}'],
-                            file_dep=[fpath],
+                            dependencies=[FileDependency(fpath), TaskDependency('generate')],
                             targets=[str(out)],
-                            task_dep=['generate'],
                         ))
 
         # Verify all processed files exist with correct content
@@ -284,7 +285,7 @@ class TestBuildSystemSimulation:
             tasks.append(Task(
                 f'compile_{name}',
                 actions=[f'cp {src} {obj}'],  # Simulate compilation
-                file_dep=[str(src)],
+                dependencies=[FileDependency(str(src))],
                 targets=[str(obj)],
             ))
 
@@ -294,9 +295,9 @@ class TestBuildSystemSimulation:
         tasks.append(Task(
             'link',
             actions=[f'cat {" ".join(obj_files)} > {binary}'],
-            file_dep=obj_files,
+            dependencies=[FileDependency(f) for f in obj_files] +
+                        [TaskDependency(f'compile_{n}') for n in sources],
             targets=[str(binary)],
-            task_dep=[f'compile_{n}' for n in sources],
         ))
 
         # Package task
@@ -304,9 +305,8 @@ class TestBuildSystemSimulation:
         tasks.append(Task(
             'package',
             actions=[f'tar cf {package} -C {build_dir} app'],
-            file_dep=[str(binary)],
+            dependencies=[FileDependency(str(binary)), TaskDependency('link')],
             targets=[str(package)],
-            task_dep=['link'],
         ))
 
         with ws.engine(tasks) as engine:
@@ -358,7 +358,7 @@ class TestBuildSystemSimulation:
             tasks.append(Task(
                 f'compile_{name}',
                 actions=[make_compile_action(name, src, obj)],
-                file_dep=[str(src)],
+                dependencies=[FileDependency(str(src))],
                 targets=[str(obj)],
             ))
 
@@ -366,7 +366,7 @@ class TestBuildSystemSimulation:
         tasks.append(Task(
             'link',
             actions=[make_link_action(obj_files, binary)],
-            file_dep=[str(o) for o in obj_files],
+            dependencies=[FileDependency(str(o)) for o in obj_files],
             targets=[str(binary)],
         ))
 
@@ -415,8 +415,8 @@ class TestFailureHandling:
 
         tasks = [
             Task('first', actions=[lambda: True]),
-            Task('fail', actions=[lambda: False], task_dep=['first']),
-            Task('after_fail', actions=[f'touch {marker}'], task_dep=['fail']),
+            Task('fail', actions=[lambda: False], dependencies=[TaskDependency('first')]),
+            Task('after_fail', actions=[f'touch {marker}'], dependencies=[TaskDependency('fail')]),
         ]
 
         with ws.engine(tasks) as engine:
@@ -448,7 +448,7 @@ class TestValuePassing:
             Task('produce', actions=[producer]),
             Task('consume', actions=[(consumer,)],
                  getargs={'path': ('produce', 'path')},
-                 task_dep=['produce']),
+                 dependencies=[TaskDependency('produce')]),
         ]
 
         with ws.engine(tasks) as engine:
@@ -509,7 +509,7 @@ class TestCallbacks:
 
         tasks = [
             Task('a', actions=[lambda: True]),
-            Task('b', actions=[lambda: True], task_dep=['a']),
+            Task('b', actions=[lambda: True], dependencies=[TaskDependency('a')]),
         ]
 
         with ws.engine(tasks, callbacks=TrackingCallbacks()) as engine:
