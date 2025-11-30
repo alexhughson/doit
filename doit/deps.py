@@ -24,10 +24,51 @@ Usage:
 
 import os
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any, Optional
 
 from doit.dependency import get_file_md5
+
+
+class CheckStatus(Enum):
+    """Result of a dependency status check."""
+    UP_TO_DATE = "up-to-date"
+    CHANGED = "changed"
+    MISSING = "missing"
+    ERROR = "error"
+
+
+@dataclass
+class DependencyCheckResult:
+    """Result of a dependency's self-check.
+
+    Returned by Dependency.check_status() to report whether the dependency
+    has changed since the last successful execution.
+
+    Attributes:
+        status: The check result status
+        reason: Human-readable explanation of why task needs to run
+        error_message: Error details if status is ERROR
+    """
+    status: CheckStatus
+    reason: Optional[str] = None
+    error_message: Optional[str] = None
+
+    @property
+    def is_up_to_date(self) -> bool:
+        """Return True if dependency hasn't changed."""
+        return self.status == CheckStatus.UP_TO_DATE
+
+    @property
+    def needs_execution(self) -> bool:
+        """Return True if task should run due to this dependency."""
+        return self.status in (CheckStatus.CHANGED, CheckStatus.MISSING)
+
+    @property
+    def is_error(self) -> bool:
+        """Return True if an error occurred during checking."""
+        return self.status == CheckStatus.ERROR
 
 
 @dataclass
@@ -91,6 +132,20 @@ class Dependency(ABC):
         return None, though implicit task deps may be added based on targets.
         """
         return None
+
+    @abstractmethod
+    def check_status(self, stored_state: Any) -> DependencyCheckResult:
+        """Perform a complete status check for this dependency.
+
+        This is the primary self-checking method. It combines existence checking
+        and modification detection into a single call, returning a structured
+        result that indicates whether the task needs to run.
+
+        @param stored_state: The state saved from last successful execution,
+                            or None if never executed.
+        @return: DependencyCheckResult with status, reason, and any error
+        """
+        pass
 
 
 @dataclass
@@ -182,6 +237,41 @@ class FileDependency(Dependency):
         """Check if the file exists on disk."""
         return os.path.exists(self.path)
 
+    def check_status(self, stored_state: Any) -> DependencyCheckResult:
+        """Perform complete status check for this file dependency.
+
+        Combines existence and modification checks:
+        1. If file doesn't exist -> ERROR (missing dependency)
+        2. If no stored state -> CHANGED (first run)
+        3. If file modified -> CHANGED
+        4. Otherwise -> UP_TO_DATE
+        """
+        key = self.get_key()
+
+        # Check existence first
+        if not self.exists():
+            return DependencyCheckResult(
+                status=CheckStatus.ERROR,
+                reason=f"file '{key}' does not exist",
+                error_message=f"Dependency '{key}' does not exist."
+            )
+
+        # No stored state = first run or state was cleared
+        if stored_state is None:
+            return DependencyCheckResult(
+                status=CheckStatus.CHANGED,
+                reason=f"file '{key}' has no stored state (first run)"
+            )
+
+        # Check if modified
+        if self.is_modified(stored_state):
+            return DependencyCheckResult(
+                status=CheckStatus.CHANGED,
+                reason=f"file '{key}' has been modified"
+            )
+
+        return DependencyCheckResult(status=CheckStatus.UP_TO_DATE)
+
 
 @dataclass
 class TaskDependency(Dependency):
@@ -217,6 +307,15 @@ class TaskDependency(Dependency):
     def creates_task_dep(self) -> Optional[str]:
         """Return the task name this dependency requires."""
         return self.task_name
+
+    def check_status(self, stored_state: Any) -> DependencyCheckResult:
+        """Task dependencies are always up-to-date (they only affect ordering).
+
+        TaskDependency controls execution order but does NOT affect whether
+        a task is considered up-to-date. The actual task ordering is handled
+        by the TaskDispatcher.
+        """
+        return DependencyCheckResult(status=CheckStatus.UP_TO_DATE)
 
 
 # =============================================================================

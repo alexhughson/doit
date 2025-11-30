@@ -858,7 +858,8 @@ class UpToDateChecker:
                 result.set_reason(DependencyReason.REMOVED_FILE_DEP, removed_files)
             result.status = 'run'
 
-        # Check dependencies (Dependency objects)
+        # Check dependencies using self-checking Dependency objects
+        from doit.deps import CheckStatus
         changed = []
         for dep in task.dependencies:
             # TaskDependency doesn't affect up-to-date status
@@ -868,12 +869,14 @@ class UpToDateChecker:
             key = dep.get_key()
             stored_state = self.store.get(task.name, key)
 
-            if not dep.exists():
-                error_msg = "Dependency '{}' does not exist.".format(key)
-                result.error_reason = error_msg
+            # Use dependency's self-checking method
+            check_result = dep.check_status(stored_state)
+
+            if check_result.is_error:
+                result.error_reason = check_result.error_message
                 if result.add_reason(DependencyReason.MISSING_FILE_DEP, key, 'error'):
                     return result
-            elif dep.is_modified(stored_state):
+            elif check_result.needs_execution:
                 changed.append(key)
 
         task.dep_changed = changed

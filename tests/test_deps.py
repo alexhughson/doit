@@ -7,7 +7,7 @@ from pathlib import Path
 
 from doit.deps import (
     Dependency, FileDependency, TaskDependency,
-    Target, FileTarget
+    Target, FileTarget, CheckStatus, DependencyCheckResult
 )
 from doit.task import Task
 from doit.dependency import (
@@ -428,3 +428,135 @@ class TestIntegrationNewDependencies:
         result3 = checker.check(task, {}, lambda x: {})
         assert result3.status == 'run'
         assert task.dep_changed  # Should have changed deps
+
+
+class TestFileDependencyCheckStatus:
+    """Tests for FileDependency.check_status() self-checking method."""
+
+    def test_check_status_error_when_file_missing(self, tmp_path):
+        """check_status() returns ERROR when file doesn't exist."""
+        dep = FileDependency(str(tmp_path / "missing.txt"))
+        result = dep.check_status(None)
+
+        assert result.status == CheckStatus.ERROR
+        assert result.is_error is True
+        assert result.is_up_to_date is False
+        assert result.error_message is not None
+        assert "does not exist" in result.error_message
+
+    def test_check_status_changed_when_no_stored_state(self, tmp_path):
+        """check_status() returns CHANGED when no stored state (first run)."""
+        f = tmp_path / "new.txt"
+        f.write_text("content")
+
+        dep = FileDependency(str(f))
+        result = dep.check_status(None)
+
+        assert result.status == CheckStatus.CHANGED
+        assert result.needs_execution is True
+        assert result.is_up_to_date is False
+        assert "no stored state" in result.reason
+
+    def test_check_status_changed_when_file_modified(self, tmp_path):
+        """check_status() returns CHANGED when file has been modified."""
+        f = tmp_path / "mod.txt"
+        f.write_text("original")
+
+        dep = FileDependency(str(f))
+        # Get initial state
+        stored_state = dep.get_state(None)
+
+        # Modify file
+        time.sleep(0.01)
+        f.write_text("modified content - different size")
+
+        result = dep.check_status(stored_state)
+
+        assert result.status == CheckStatus.CHANGED
+        assert result.needs_execution is True
+        assert "modified" in result.reason
+
+    def test_check_status_up_to_date_when_unchanged(self, tmp_path):
+        """check_status() returns UP_TO_DATE when file unchanged."""
+        f = tmp_path / "unchanged.txt"
+        f.write_text("content")
+
+        dep = FileDependency(str(f))
+        stored_state = dep.get_state(None)
+
+        # Same file, no modifications
+        result = dep.check_status(stored_state)
+
+        assert result.status == CheckStatus.UP_TO_DATE
+        assert result.is_up_to_date is True
+        assert result.needs_execution is False
+        assert result.error_message is None
+
+    def test_check_status_with_timestamp_checker(self, tmp_path):
+        """check_status() works with timestamp checker."""
+        f = tmp_path / "ts.txt"
+        f.write_text("content")
+
+        dep = FileDependency(str(f), checker="timestamp")
+        stored_state = dep.get_state(None)
+
+        # Unchanged
+        result1 = dep.check_status(stored_state)
+        assert result1.is_up_to_date is True
+
+        # Modify
+        time.sleep(0.01)
+        f.write_text("changed")
+
+        result2 = dep.check_status(stored_state)
+        assert result2.needs_execution is True
+
+
+class TestTaskDependencyCheckStatus:
+    """Tests for TaskDependency.check_status() self-checking method."""
+
+    def test_check_status_always_up_to_date(self):
+        """TaskDependency.check_status() always returns UP_TO_DATE."""
+        dep = TaskDependency("some_task")
+
+        # No stored state
+        result1 = dep.check_status(None)
+        assert result1.status == CheckStatus.UP_TO_DATE
+        assert result1.is_up_to_date is True
+
+        # With stored state (shouldn't matter)
+        result2 = dep.check_status({"some": "state"})
+        assert result2.status == CheckStatus.UP_TO_DATE
+
+    def test_check_status_never_needs_execution(self):
+        """TaskDependency never triggers execution (only affects ordering)."""
+        dep = TaskDependency("build")
+
+        result = dep.check_status(None)
+        assert result.needs_execution is False
+        assert result.is_error is False
+
+
+class TestDependencyCheckResultProperties:
+    """Tests for DependencyCheckResult helper properties."""
+
+    def test_is_up_to_date_property(self):
+        """is_up_to_date is True only for UP_TO_DATE status."""
+        assert DependencyCheckResult(CheckStatus.UP_TO_DATE).is_up_to_date is True
+        assert DependencyCheckResult(CheckStatus.CHANGED).is_up_to_date is False
+        assert DependencyCheckResult(CheckStatus.MISSING).is_up_to_date is False
+        assert DependencyCheckResult(CheckStatus.ERROR).is_up_to_date is False
+
+    def test_needs_execution_property(self):
+        """needs_execution is True for CHANGED and MISSING."""
+        assert DependencyCheckResult(CheckStatus.UP_TO_DATE).needs_execution is False
+        assert DependencyCheckResult(CheckStatus.CHANGED).needs_execution is True
+        assert DependencyCheckResult(CheckStatus.MISSING).needs_execution is True
+        assert DependencyCheckResult(CheckStatus.ERROR).needs_execution is False
+
+    def test_is_error_property(self):
+        """is_error is True only for ERROR status."""
+        assert DependencyCheckResult(CheckStatus.UP_TO_DATE).is_error is False
+        assert DependencyCheckResult(CheckStatus.CHANGED).is_error is False
+        assert DependencyCheckResult(CheckStatus.MISSING).is_error is False
+        assert DependencyCheckResult(CheckStatus.ERROR).is_error is True
