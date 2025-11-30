@@ -6,6 +6,7 @@ import traceback
 from collections import defaultdict
 from configparser import ConfigParser
 import importlib
+from pathlib import Path
 
 from .version import VERSION
 from .plugin import PluginDict
@@ -110,7 +111,7 @@ class DoitConfig():
         toml_config = {}
         raw = None
 
-        if os.path.exists(filename):
+        if Path(filename).exists():
             if not self.toml:
                 sys.stderr.write(
                     f'''WARNING: File "{filename}" might contain doit configuration,'''
@@ -169,8 +170,8 @@ class DoitMain(object):
         if isinstance(config_filenames, str):
             config_filenames = [config_filenames]
 
-        # ignore config files do that not exist
-        config_filenames = [fn for fn in config_filenames if os.path.exists(fn)]
+        # ignore config files that do not exist
+        config_filenames = [fn for fn in config_filenames if Path(fn).exists()]
 
         self.config = defaultdict(dict)
         if extra_config:
@@ -189,7 +190,7 @@ class DoitMain(object):
     def print_version():
         """print doit version (includes path location)"""
         print(".".join([str(i) for i in VERSION]))
-        print("lib @", os.path.dirname(os.path.abspath(__file__)))
+        print("lib @", str(Path(__file__).resolve().parent))
 
 
     def get_cmds(self):

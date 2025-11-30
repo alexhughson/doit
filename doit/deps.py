@@ -22,11 +22,11 @@ Usage:
     )
 """
 
-import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Optional
+from pathlib import Path
+from typing import Any, Optional, Union
 
 from doit.dependency import get_file_md5
 
@@ -158,15 +158,20 @@ class FileDependency(Dependency):
 
     Example:
         FileDependency('src/main.c')
-        FileDependency('data.csv', checker='timestamp')
+        FileDependency(Path('data.csv'), checker='timestamp')
     """
 
-    path: str
+    path: Union[str, Path]
     checker: str = "md5"  # "md5" or "timestamp"
+    _path_obj: Path = field(init=False, repr=False)
+
+    def __post_init__(self):
+        """Convert path to Path object for internal use."""
+        self._path_obj = Path(self.path)
 
     def get_key(self) -> str:
         """Return absolute path as the storage key."""
-        return os.path.abspath(self.path)
+        return str(self._path_obj.resolve())
 
     def is_modified(self, stored_state: Any) -> bool:
         """Check if file has changed since stored_state.
@@ -182,7 +187,7 @@ class FileDependency(Dependency):
             return True
 
         try:
-            file_stat = os.stat(self.path)
+            file_stat = self._path_obj.stat()
         except OSError:
             # File doesn't exist - will be caught by exists() check
             return True
@@ -206,7 +211,7 @@ class FileDependency(Dependency):
             return True
 
         # Level 3: check md5 hash (slow but thorough)
-        return file_md5 != get_file_md5(self.path)
+        return file_md5 != get_file_md5(self._path_obj)
 
     def get_state(self, current_state: Any) -> Any:
         """Compute file state to save after execution.
@@ -214,11 +219,13 @@ class FileDependency(Dependency):
         For md5 checker: returns (timestamp, size, md5)
         For timestamp checker: returns mtime float
         """
+        file_stat = self._path_obj.stat()
+
         if self.checker == "timestamp":
-            return os.path.getmtime(self.path)
+            return file_stat.st_mtime
 
         # MD5 checker
-        timestamp = os.path.getmtime(self.path)
+        timestamp = file_stat.st_mtime
 
         # Optimization: if timestamp unchanged, state is same
         if current_state is not None:
@@ -229,13 +236,13 @@ class FileDependency(Dependency):
             except (TypeError, IndexError):
                 pass
 
-        size = os.path.getsize(self.path)
-        md5 = get_file_md5(self.path)
+        size = file_stat.st_size
+        md5 = get_file_md5(self._path_obj)
         return (timestamp, size, md5)
 
     def exists(self) -> bool:
         """Check if the file exists on disk."""
-        return os.path.exists(self.path)
+        return self._path_obj.exists()
 
     def check_status(self, stored_state: Any) -> DependencyCheckResult:
         """Perform complete status check for this file dependency.
@@ -362,18 +369,23 @@ class FileTarget(Target):
 
     Example:
         FileTarget('build/main.o')
-        FileTarget('output/report.pdf')
+        FileTarget(Path('output/report.pdf'))
     """
 
-    path: str
+    path: Union[str, Path]
+    _path_obj: Path = field(init=False, repr=False)
+
+    def __post_init__(self):
+        """Convert path to Path object for internal use."""
+        self._path_obj = Path(self.path)
 
     def get_key(self) -> str:
         """Return absolute path as the key (matches FileDependency)."""
-        return os.path.abspath(self.path)
+        return str(self._path_obj.resolve())
 
     def exists(self) -> bool:
         """Check if the file exists on disk."""
-        return os.path.exists(self.path)
+        return self._path_obj.exists()
 
     def matches_dependency(self, dep: Dependency) -> bool:
         """Check if a FileDependency matches this target."""

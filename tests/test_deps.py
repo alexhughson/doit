@@ -560,3 +560,67 @@ class TestDependencyCheckResultProperties:
         assert DependencyCheckResult(CheckStatus.CHANGED).is_error is False
         assert DependencyCheckResult(CheckStatus.MISSING).is_error is False
         assert DependencyCheckResult(CheckStatus.ERROR).is_error is True
+
+
+class TestPathlibSupport:
+    """Tests for pathlib.Path support in dependency classes."""
+
+    def test_file_dependency_accepts_path_object(self, tmp_path):
+        """FileDependency accepts pathlib.Path objects."""
+        f = tmp_path / "pathlib_test.txt"
+        f.write_text("content")
+
+        # Create with Path object directly (not str)
+        dep = FileDependency(f)  # Path object
+        assert dep.exists() is True
+        assert dep.get_key() == str(f.resolve())
+
+    def test_file_dependency_path_object_all_methods(self, tmp_path):
+        """All FileDependency methods work with Path object input."""
+        f = tmp_path / "full_test.txt"
+        f.write_text("original")
+
+        dep = FileDependency(f)
+
+        # get_state works
+        state = dep.get_state(None)
+        assert state is not None
+        assert isinstance(state[0], float)  # timestamp
+        assert isinstance(state[1], int)  # size
+        assert isinstance(state[2], str)  # md5
+
+        # is_modified works
+        assert dep.is_modified(state) is False
+
+        # check_status works
+        result = dep.check_status(state)
+        assert result.is_up_to_date is True
+
+    def test_file_target_accepts_path_object(self, tmp_path):
+        """FileTarget accepts pathlib.Path objects."""
+        f = tmp_path / "target.txt"
+        f.write_text("output")
+
+        target = FileTarget(f)  # Path object
+        assert target.exists() is True
+        assert target.get_key() == str(f.resolve())
+
+    def test_file_dependency_and_target_matching_with_paths(self, tmp_path):
+        """FileDependency and FileTarget match correctly when created from Path."""
+        f = tmp_path / "shared.txt"
+        f.write_text("content")
+
+        dep = FileDependency(f)
+        target = FileTarget(f)
+
+        assert target.matches_dependency(dep) is True
+
+    def test_file_dependency_path_equality(self, tmp_path):
+        """FileDependency created from str and Path have same keys."""
+        f = tmp_path / "equality_test.txt"
+        f.write_text("content")
+
+        dep_str = FileDependency(str(f))
+        dep_path = FileDependency(f)
+
+        assert dep_str.get_key() == dep_path.get_key()

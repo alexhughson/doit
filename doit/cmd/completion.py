@@ -1,7 +1,7 @@
 """generate shell script with tab completion code for doit commands/tasks"""
 
-import os
 import sys
+from pathlib import Path
 from string import Template
 
 from ..exceptions import InvalidCommand
@@ -89,7 +89,7 @@ class TabCompletion(DoitCmdBase):
             pt_list_param = ''
 
         # dict with template values
-        pt_bin_name = os.path.split(sys.argv[0])[1]
+        pt_bin_name = Path(sys.argv[0]).name
         tmpl_vars = {
             'pt_bin_name': pt_bin_name,
             'pt_cmds': ' '.join(sorted(self.cmds)),

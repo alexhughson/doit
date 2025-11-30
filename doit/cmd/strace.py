@@ -1,6 +1,7 @@
 import sys
 import os
 import re
+from pathlib import Path
 
 from ..exceptions import InvalidCommand
 from ..action import CmdAction
@@ -52,15 +53,16 @@ So this is NOT 100% reliable, use with care!
 
     def execute(self, params, args):
         """remove existing output file if any and do sanity checking"""
-        if os.path.exists(self.TRACE_OUT):  # pragma: no cover
-            os.unlink(self.TRACE_OUT)
+        trace_path = Path(self.TRACE_OUT)
+        if trace_path.exists():  # pragma: no cover
+            trace_path.unlink()
         if len(args) != 1:
             msg = ('strace failed, must select *one* task to strace.'
                    '\nCheck `{} help strace`.'.format(self.bin_name))
             raise InvalidCommand(msg)
         result = Run.execute(self, params, args)
-        if (not params['keep_trace']) and os.path.exists(self.TRACE_OUT):
-            os.unlink(self.TRACE_OUT)
+        if (not params['keep_trace']) and trace_path.exists():
+            trace_path.unlink()
         return result
 
     def _execute(self, show_all):
@@ -123,7 +125,8 @@ def find_deps(outstream, strace_out, show_all):
     read = set()
     write = set()
     cwd = os.getcwd()
-    if not os.path.exists(strace_out):
+    strace_path = Path(strace_out)
+    if not strace_path.exists():
         return
     with open(strace_out) as text:
         for line in text:
@@ -132,7 +135,7 @@ def find_deps(outstream, strace_out, show_all):
             if not match:
                 continue
             rel_name = match.group('file')
-            name = os.path.abspath(rel_name)
+            name = str(Path(rel_name).resolve())
 
             # ignore files out of cwd
             if not show_all:

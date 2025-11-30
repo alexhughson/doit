@@ -224,7 +224,19 @@ class TestSaveSuccess(object):
         t1 = Task("taskId_X", None,
                   dependencies=[FileDependency(filePath)])
         pdep_manager._set(t1.name, filePath, (345, 0, "fake"))
-        monkeypatch.setattr(os.path, 'getmtime', lambda x: 345)
+        # Mock os.stat to return st_mtime=345 (matching stored state)
+        # Only for the specific file, let other calls through
+        class MockStat:
+            st_mtime = 345
+            st_size = 0
+        original_stat = os.stat
+        def mock_stat(path, *args, **kwargs):
+            # Normalize path to string for comparison
+            path_str = str(path)
+            if filePath in path_str or path_str == filePath:
+                return MockStat()
+            return original_stat(path, *args, **kwargs)
+        monkeypatch.setattr(os, 'stat', mock_stat)
         # save but md5 is not modified
         pdep_manager.save_success(t1)
         got = pdep_manager._get("taskId_X", filePath)

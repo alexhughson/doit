@@ -6,6 +6,7 @@ import copy
 import inspect
 import importlib
 from collections import OrderedDict
+from pathlib import Path
 
 from .exceptions import InvalidTask, InvalidCommand, InvalidDodoFile
 from .task import DelayedLoader, Task, dict_to_task
@@ -45,36 +46,39 @@ def get_module(dodo_file, cwd=None, seek_parent=False):
     """
     global initial_workdir
     initial_workdir = os.getcwd()
+
     def exist_or_raise(path):
         """raise exception if file on given path doesnt exist"""
-        if not os.path.exists(path):
+        if not Path(path).exists():
             msg = (f"Could not find dodo file '{path}'.\n"
                    "Please use '-f' to specify file name.\n")
             raise InvalidDodoFile(msg)
 
     # get absolute path name
-    if os.path.isabs(dodo_file):
-        dodo_path = dodo_file
+    dodo_path_obj = Path(dodo_file)
+    if dodo_path_obj.is_absolute():
+        dodo_path = dodo_path_obj
         exist_or_raise(dodo_path)
     else:
         if not seek_parent:
-            dodo_path = os.path.abspath(dodo_file)
+            dodo_path = dodo_path_obj.resolve()
             exist_or_raise(dodo_path)
         else:
             # try to find file in any folder above
-            current_dir = initial_workdir
-            dodo_path = os.path.join(current_dir, dodo_file)
-            file_name = os.path.basename(dodo_path)
-            parent = os.path.dirname(dodo_path)
-            while not os.path.exists(dodo_path):
-                new_parent = os.path.dirname(parent)
+            current_dir = Path(initial_workdir)
+            dodo_path = current_dir / dodo_file
+            file_name = dodo_path.name
+            parent = dodo_path.parent
+            while not dodo_path.exists():
+                new_parent = parent.parent
                 if new_parent == parent:  # reached root path
                     exist_or_raise(dodo_file)
                 parent = new_parent
-                dodo_path = os.path.join(parent, file_name)
+                dodo_path = parent / file_name
 
     ## load module dodo file and set environment
-    base_path, file_name = os.path.split(dodo_path)
+    base_path = str(dodo_path.parent)
+    file_name = dodo_path.name
     # make sure dodo path is on sys.path so we can import it
     sys.path.insert(0, base_path)
 
@@ -83,8 +87,9 @@ def get_module(dodo_file, cwd=None, seek_parent=False):
         full_cwd = base_path
     else:
         # insert specified cwd into sys.path
-        full_cwd = os.path.abspath(cwd)
-        if not os.path.isdir(full_cwd):
+        cwd_path = Path(cwd).resolve()
+        full_cwd = str(cwd_path)
+        if not cwd_path.is_dir():
             msg = "Specified 'dir' path must be a directory.\nGot '%s'(%s)."
             raise InvalidCommand(msg % (cwd, full_cwd))
         sys.path.insert(0, full_cwd)
@@ -93,7 +98,7 @@ def get_module(dodo_file, cwd=None, seek_parent=False):
     os.chdir(full_cwd)
 
     # get module containing the tasks
-    return importlib.import_module(os.path.splitext(file_name)[0])
+    return importlib.import_module(Path(file_name).stem)
 
 
 

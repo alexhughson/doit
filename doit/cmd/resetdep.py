@@ -1,4 +1,4 @@
-import os
+from pathlib import Path
 
 from .base import DoitCmdBase, check_tasks_exist, subtasks_iter
 
@@ -52,7 +52,7 @@ to a task that has already run.
             result = self.dep_manager.get_result(task.name)
 
             missing_deps = [dep for dep in task.file_dep
-                            if not os.path.exists(dep)]
+                            if not Path(dep).exists()]
 
             if len(missing_deps) > 0:
                 deps = "', '".join(missing_deps)

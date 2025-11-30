@@ -10,6 +10,7 @@ from collections import defaultdict
 import importlib
 import dbm
 from enum import Enum
+from pathlib import Path
 
 # note: to check which DBM backend is being used:
 #   >>> doit dumpdb
@@ -215,7 +216,8 @@ class JsonDB(ProcessingStateStore):
         """Open/create a DB file"""
         self.name = name
         self.codec = codec
-        if not os.path.exists(self.name):
+        self._path = Path(name)
+        if not self._path.exists():
             self._db = {}
         else:
             self._db = self._load()
@@ -228,7 +230,7 @@ class JsonDB(ProcessingStateStore):
                 return self.codec.decode(db_file.read())
             except ValueError as error:
                 # file contains corrupted json data
-                fname = os.path.abspath(self.name)
+                fname = str(self._path.resolve())
                 msg = (f"{error.args[0]}\nInvalid JSON data in {fname}\n"
                        "To fix this problem, you can just remove the "
                        "corrupted file, a new one will be generated.\n")
@@ -505,10 +507,10 @@ class FileChangedChecker(object):
     CheckerError = os.error
 
     def exists(self, file_path):
-        return os.path.exists(file_path)
+        return Path(file_path).exists()
 
     def info(self, file_path):
-        return os.stat(file_path)
+        return Path(file_path).stat()
 
     def check_modified(self, file_path, file_stat, state):
         """Check if file in file_path is modified from previous "state".
@@ -564,12 +566,13 @@ class MD5Checker(FileChangedChecker):
 
 
     def get_state(self, dep, current_state):
-        timestamp = os.path.getmtime(dep)
+        stat = os.stat(dep)
+        timestamp = stat.st_mtime
         # time optimization. if dep is already saved with current
         # timestamp skip calculating md5
         if current_state and current_state[0] == timestamp:
             return
-        size = os.path.getsize(dep)
+        size = stat.st_size
         md5 = get_file_md5(dep)
         return timestamp, size, md5
 
@@ -582,7 +585,7 @@ class TimestampChecker(FileChangedChecker):
 
     def get_state(self, dep, current_state):
         """@returns float: mtime for file `dep`"""
-        return os.path.getmtime(dep)
+        return os.stat(dep).st_mtime
 
 
 # name of checkers class available

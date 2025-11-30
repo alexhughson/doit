@@ -6,7 +6,7 @@ import sys
 import inspect
 from collections import OrderedDict
 from collections.abc import Callable
-from pathlib import PurePath
+from pathlib import Path, PurePath
 
 from .cmdparse import CmdOption, TaskParse, normalize_option
 from .exceptions import BaseFail, InvalidTask
@@ -679,19 +679,20 @@ def _convert_legacy_deps(task_dict):
 def clean_targets(task, dryrun):
     """remove all targets from a task"""
     for target in sorted(task.targets, reverse=True):
-        if os.path.isfile(target):
+        target_path = Path(target)
+        if target_path.is_file():
             print("%s - removing file '%s'" % (task.name, target))
             if not dryrun:
-                os.remove(target)
-        elif os.path.isdir(target):
-            if os.listdir(target):
+                target_path.unlink()
+        elif target_path.is_dir():
+            if any(target_path.iterdir()):
                 msg = "%s - cannot remove (it is not empty) '%s'"
                 print(msg % (task.name, target))
             else:
                 msg = "%s - removing dir '%s'"
                 print(msg % (task.name, target))
                 if not dryrun:
-                    os.rmdir(target)
+                    target_path.rmdir()
 
 
 # uptodate
