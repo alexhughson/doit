@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Any, Optional, Union
 
 from doit.dependency import get_file_md5
+from doit.matching.protocols import MatchStrategy
 
 
 class CheckStatus(Enum):
@@ -132,6 +133,17 @@ class Dependency(ABC):
         return None, though implicit task deps may be added based on targets.
         """
         return None
+
+    def get_match_strategy(self) -> MatchStrategy:
+        """Return how this dependency should be matched against targets.
+
+        Default is EXACT matching (keys must be equal).
+        Override in subclasses for different matching behavior.
+
+        Returns:
+            MatchStrategy indicating which index to use for matching.
+        """
+        return MatchStrategy.EXACT
 
     @abstractmethod
     def check_status(self, stored_state: Any) -> DependencyCheckResult:
@@ -355,6 +367,17 @@ class Target(ABC):
         """Check if this target currently exists."""
         pass
 
+    def get_match_strategy(self) -> MatchStrategy:
+        """Return how this target should be matched against dependencies.
+
+        Default is EXACT matching (keys must be equal).
+        Override in subclasses for different matching behavior (e.g., PREFIX).
+
+        Returns:
+            MatchStrategy indicating which index to use for matching.
+        """
+        return MatchStrategy.EXACT
+
     def matches_dependency(self, dep: Dependency) -> bool:
         """Check if a dependency matches this target.
 
@@ -392,3 +415,376 @@ class FileTarget(Target):
         if isinstance(dep, FileDependency):
             return self.get_key() == dep.get_key()
         return False
+
+
+# =============================================================================
+# S3 Dependency and Target Classes
+# =============================================================================
+
+@dataclass
+class S3Dependency(Dependency):
+    """S3 object dependency with ETag-based change detection.
+
+    Requires boto3 (lazy import). Change detection uses HEAD request
+    to compare ETag values, which is efficient and reliable.
+
+    Example:
+        S3Dependency('my-bucket', 'data/input.csv')
+        S3Dependency('my-bucket', 'data/input.csv', profile='dev')
+
+    Attributes:
+        bucket: S3 bucket name
+        key: S3 object key (path within bucket)
+        profile: AWS profile name (optional)
+        region: AWS region (optional)
+    """
+
+    bucket: str
+    key: str
+    profile: Optional[str] = None
+    region: Optional[str] = None
+    _client: Any = field(init=False, repr=False, default=None)
+
+    def _get_client(self):
+        """Lazy-load boto3 and create S3 client."""
+        if self._client is None:
+            try:
+                import boto3
+            except ImportError:
+                raise ImportError(
+                    "boto3 required for S3Dependency. Install: pip install boto3"
+                )
+            session_kwargs = {}
+            if self.profile:
+                session_kwargs['profile_name'] = self.profile
+            if self.region:
+                session_kwargs['region_name'] = self.region
+            self._client = boto3.Session(**session_kwargs).client('s3')
+        return self._client
+
+    def get_key(self) -> str:
+        """Return S3 URI: s3://bucket/key"""
+        return f"s3://{self.bucket}/{self.key}"
+
+    def exists(self) -> bool:
+        """Check if object exists via HEAD request."""
+        try:
+            self._get_client().head_object(Bucket=self.bucket, Key=self.key)
+            return True
+        except Exception:
+            return False
+
+    def is_modified(self, stored_state: Any) -> bool:
+        """Check if ETag changed since last run.
+
+        @param stored_state: Previously stored (etag, last_modified) tuple
+        @return: True if the object has changed
+        """
+        if stored_state is None:
+            return True
+        try:
+            resp = self._get_client().head_object(Bucket=self.bucket, Key=self.key)
+            current_etag = resp['ETag'].strip('"')
+            # stored_state is (etag, mtime) tuple
+            stored_etag = stored_state[0] if isinstance(stored_state, tuple) else stored_state
+            return current_etag != stored_etag
+        except Exception:
+            return True
+
+    def get_state(self, current_state: Any) -> Any:
+        """Return (etag, last_modified) for storage.
+
+        @param current_state: Previously stored state (for optimization)
+        @return: (etag, mtime) tuple, or None if unchanged
+        """
+        try:
+            resp = self._get_client().head_object(Bucket=self.bucket, Key=self.key)
+            etag = resp['ETag'].strip('"')
+            mtime = resp['LastModified'].timestamp()
+            # Optimization: skip if unchanged
+            if current_state and isinstance(current_state, tuple):
+                if current_state[0] == etag:
+                    return None
+            return (etag, mtime)
+        except Exception:
+            return None
+
+    def check_status(self, stored_state: Any) -> DependencyCheckResult:
+        """Complete status check for S3 dependency.
+
+        Combines existence and modification checks into a single result.
+        """
+        s3_key = self.get_key()
+        if not self.exists():
+            return DependencyCheckResult(
+                status=CheckStatus.ERROR,
+                reason=f"S3 object '{s3_key}' does not exist",
+                error_message=f"Dependency '{s3_key}' does not exist."
+            )
+        if stored_state is None:
+            return DependencyCheckResult(
+                status=CheckStatus.CHANGED,
+                reason=f"S3 object '{s3_key}' has no stored state (first run)"
+            )
+        if self.is_modified(stored_state):
+            return DependencyCheckResult(
+                status=CheckStatus.CHANGED,
+                reason=f"S3 object '{s3_key}' has been modified"
+            )
+        return DependencyCheckResult(status=CheckStatus.UP_TO_DATE)
+
+
+@dataclass
+class S3Target(Target):
+    """S3 object target (output).
+
+    Represents an S3 object produced by a task. Used for:
+    1. Checking if task outputs exist
+    2. Matching S3Dependency objects for implicit task dependencies
+
+    Example:
+        S3Target('my-bucket', 'output/results.csv')
+
+    Attributes:
+        bucket: S3 bucket name
+        key: S3 object key (path within bucket)
+        profile: AWS profile name (optional)
+        region: AWS region (optional)
+    """
+
+    bucket: str
+    key: str
+    profile: Optional[str] = None
+    region: Optional[str] = None
+    _client: Any = field(init=False, repr=False, default=None)
+
+    def _get_client(self):
+        """Lazy-load boto3 and create S3 client."""
+        if self._client is None:
+            try:
+                import boto3
+            except ImportError:
+                raise ImportError(
+                    "boto3 required for S3Target. Install: pip install boto3"
+                )
+            session_kwargs = {}
+            if self.profile:
+                session_kwargs['profile_name'] = self.profile
+            if self.region:
+                session_kwargs['region_name'] = self.region
+            self._client = boto3.Session(**session_kwargs).client('s3')
+        return self._client
+
+    def get_key(self) -> str:
+        """Return S3 URI: s3://bucket/key"""
+        return f"s3://{self.bucket}/{self.key}"
+
+    def exists(self) -> bool:
+        """Check if object exists via HEAD request."""
+        try:
+            self._get_client().head_object(Bucket=self.bucket, Key=self.key)
+            return True
+        except Exception:
+            return False
+
+    def matches_dependency(self, dep: Dependency) -> bool:
+        """Match S3Dependency with same bucket/key.
+
+        This enables implicit task dependency matching for S3 objects.
+        """
+        if isinstance(dep, S3Dependency):
+            return self.bucket == dep.bucket and self.key == dep.key
+        return False
+
+
+# =============================================================================
+# Directory/Prefix Dependency and Target Classes
+# =============================================================================
+
+@dataclass
+class DirectoryDependency(Dependency):
+    """Dependency on a directory/prefix - depends on everything under it.
+
+    Use when you need all files under a directory but don't know exactly
+    which files will exist. The dependency is satisfied by any target
+    whose output is under this directory's path.
+
+    Example:
+        DirectoryDependency('/data/processed/')
+        # This will depend on any task that outputs to /data/, /data/processed/, etc.
+
+    Attributes:
+        path: Directory path (will be normalized with trailing slash)
+    """
+
+    path: Union[str, Path]
+    _path_obj: Path = field(init=False, repr=False)
+
+    def __post_init__(self):
+        """Convert path to Path object for internal use."""
+        self._path_obj = Path(self.path) if isinstance(self.path, str) else self.path
+
+    def get_key(self) -> str:
+        """Return normalized path with trailing slash."""
+        resolved = str(self._path_obj.resolve())
+        return resolved if resolved.endswith('/') else resolved + '/'
+
+    def get_match_strategy(self) -> MatchStrategy:
+        """Directory dependencies use PREFIX matching."""
+        return MatchStrategy.PREFIX
+
+    def exists(self) -> bool:
+        """Check if the directory exists."""
+        return self._path_obj.is_dir()
+
+    def is_modified(self, stored_state: Any) -> bool:
+        """Directory dependencies always return True (force re-evaluation).
+
+        Since we don't know what files are under the directory, we can't
+        reliably determine if it changed. The actual files should be
+        tracked by the producing task.
+        """
+        return True
+
+    def get_state(self, current_state: Any) -> Any:
+        """Return directory existence as state."""
+        return self.exists()
+
+    def check_status(self, stored_state: Any) -> DependencyCheckResult:
+        """Check status - directories are always considered changed.
+
+        This ensures the task re-runs when depending on a directory,
+        which is the expected behavior for prefix dependencies.
+        """
+        key = self.get_key()
+        return DependencyCheckResult(
+            status=CheckStatus.CHANGED,
+            reason=f"directory dependency '{key}' always triggers re-run"
+        )
+
+
+@dataclass
+class DirectoryTarget(Target):
+    """Target representing a directory/prefix output.
+
+    Use when a task produces files in a directory but doesn't know exactly
+    which files will be created. Any dependency under this directory will
+    automatically depend on the task that produces this target.
+
+    Example:
+        DirectoryTarget('/output/generated/')
+        # Any dependency on /output/generated/*, /output/generated/subdir/*, etc.
+        # will automatically depend on the task that produces this target.
+
+    Attributes:
+        path: Directory path (will be normalized with trailing slash)
+    """
+
+    path: Union[str, Path]
+    _path_obj: Path = field(init=False, repr=False)
+
+    def __post_init__(self):
+        """Convert path to Path object for internal use."""
+        self._path_obj = Path(self.path) if isinstance(self.path, str) else self.path
+
+    def get_key(self) -> str:
+        """Return normalized path with trailing slash."""
+        resolved = str(self._path_obj.resolve())
+        return resolved if resolved.endswith('/') else resolved + '/'
+
+    def get_match_strategy(self) -> MatchStrategy:
+        """Directory targets use PREFIX matching."""
+        return MatchStrategy.PREFIX
+
+    def exists(self) -> bool:
+        """Check if the directory exists."""
+        return self._path_obj.is_dir()
+
+
+@dataclass
+class S3PrefixDependency(Dependency):
+    """Dependency on an S3 prefix - depends on all objects under it.
+
+    Use when you need all objects under an S3 prefix but don't know exactly
+    which objects will exist.
+
+    Example:
+        S3PrefixDependency('my-bucket', 'data/processed/')
+        # Depends on any task that outputs to s3://my-bucket/data/ or below
+
+    Attributes:
+        bucket: S3 bucket name
+        prefix: S3 key prefix (will be normalized with trailing slash)
+        profile: AWS profile name (optional)
+        region: AWS region (optional)
+    """
+
+    bucket: str
+    prefix: str
+    profile: Optional[str] = None
+    region: Optional[str] = None
+
+    def get_key(self) -> str:
+        """Return S3 URI with normalized prefix (trailing slash)."""
+        normalized = self.prefix if self.prefix.endswith('/') else self.prefix + '/'
+        return f"s3://{self.bucket}/{normalized}"
+
+    def get_match_strategy(self) -> MatchStrategy:
+        """S3 prefix dependencies use PREFIX matching."""
+        return MatchStrategy.PREFIX
+
+    def exists(self) -> bool:
+        """S3 prefixes are considered to always exist (virtual concept)."""
+        return True
+
+    def is_modified(self, stored_state: Any) -> bool:
+        """S3 prefix dependencies always return True (force re-evaluation)."""
+        return True
+
+    def get_state(self, current_state: Any) -> Any:
+        """Return True as state (prefix exists as a concept)."""
+        return True
+
+    def check_status(self, stored_state: Any) -> DependencyCheckResult:
+        """Check status - S3 prefix dependencies always trigger re-run."""
+        key = self.get_key()
+        return DependencyCheckResult(
+            status=CheckStatus.CHANGED,
+            reason=f"S3 prefix dependency '{key}' always triggers re-run"
+        )
+
+
+@dataclass
+class S3PrefixTarget(Target):
+    """Target representing an S3 prefix output.
+
+    Use when a task produces objects under an S3 prefix but doesn't know
+    exactly which objects will be created.
+
+    Example:
+        S3PrefixTarget('my-bucket', 'output/generated/')
+
+    Attributes:
+        bucket: S3 bucket name
+        prefix: S3 key prefix (will be normalized with trailing slash)
+        profile: AWS profile name (optional)
+        region: AWS region (optional)
+    """
+
+    bucket: str
+    prefix: str
+    profile: Optional[str] = None
+    region: Optional[str] = None
+
+    def get_key(self) -> str:
+        """Return S3 URI with normalized prefix (trailing slash)."""
+        normalized = self.prefix if self.prefix.endswith('/') else self.prefix + '/'
+        return f"s3://{self.bucket}/{normalized}"
+
+    def get_match_strategy(self) -> MatchStrategy:
+        """S3 prefix targets use PREFIX matching."""
+        return MatchStrategy.PREFIX
+
+    def exists(self) -> bool:
+        """S3 prefixes are considered to always exist (virtual concept)."""
+        return True
