@@ -5,10 +5,13 @@ providing a clearer API and enabling future enhancements like validation.
 """
 
 from __future__ import annotations
-from typing import Optional, Iterator, TYPE_CHECKING, Any
+from typing import Dict, List, Optional, Iterator, Tuple, TYPE_CHECKING, Any
+
+from ..matching import MatchingEngine
 
 if TYPE_CHECKING:
     from ..task import Task
+    from ..deps import Dependency, Target
 
 
 class TaskRegistry:
@@ -55,30 +58,116 @@ class TaskRegistry:
 
 
 class TargetRegistry:
-    """Maps target file paths to task names.
+    """Registry mapping targets to producing tasks.
 
-    Used to resolve file dependencies into task dependencies
-    when a task's file_dep matches another task's target.
+    Uses MatchingEngine for efficient multi-strategy matching:
+    - EXACT: O(1) dictionary lookup
+    - PREFIX: O(k) trie-based prefix matching (k = path depth)
+    - CUSTOM: O(n) fallback for custom matching logic
+
+    This supports file paths, directory prefixes, S3 paths, database
+    tables, and any custom target types with specialized matching.
     """
 
     def __init__(self):
-        self._targets: dict[str, str] = {}
+        self._engine = MatchingEngine()
+        # Keep _by_key for legacy string-based API compatibility
+        self._by_key: Dict[str, str] = {}
 
-    def register(self, target_path: str, task_name: str) -> None:
-        """Register a target file as produced by a task."""
-        self._targets[target_path] = task_name
+    def register(self, target: Target, task_name: str) -> None:
+        """Register a target with its producing task.
 
+        @param target: Target object representing task output
+        @param task_name: Name of the task that produces this target
+        @raises InvalidTask: If the same target key is already registered
+        """
+        from ..exceptions import InvalidTask
+
+        try:
+            self._engine.register_target(target, task_name)
+        except ValueError as e:
+            # Convert to InvalidTask for API compatibility
+            key = target.get_key()
+            raise InvalidTask(
+                f"Two different tasks can't have a common target. "
+                f"'{key}' is a target for {task_name} and {self._by_key.get(key, 'unknown')}."
+            ) from e
+
+        # Also store in _by_key for legacy API
+        key = target.get_key()
+        self._by_key[key] = task_name
+
+    def register_legacy(self, target_path: str, task_name: str) -> None:
+        """Register a legacy string target (deprecated).
+
+        For backward compatibility with string-based targets.
+        """
+        from ..exceptions import InvalidTask
+
+        if target_path in self._by_key:
+            raise InvalidTask(
+                f"Two different tasks can't have a common target. "
+                f"'{target_path}' is a target for {task_name} and {self._by_key[target_path]}."
+            )
+        self._by_key[target_path] = task_name
+
+    def find_producer(self, dep: Dependency) -> Optional[str]:
+        """Find the task that produces a target matching this dependency.
+
+        Uses MatchingEngine for efficient multi-strategy lookup.
+        Priority: exact match > prefix match > custom match.
+
+        @param dep: Dependency to match against registered targets
+        @return: Task name that produces a matching target, or None
+        """
+        return self._engine.find_producer(dep)
+
+    def find_all_producers(self, dep: Dependency) -> List[str]:
+        """Find all tasks that produce targets matching this dependency.
+
+        Useful for debugging or when multiple matches are valid.
+
+        @param dep: Dependency to match against registered targets
+        @return: List of task names that produce matching targets
+        """
+        return self._engine.find_all_producers(dep)
+
+    def find_producer_by_path(self, file_path: str) -> Optional[str]:
+        """Find producer for a file path (legacy string-based lookup).
+
+        @param file_path: File path string to look up
+        @return: Task name or None
+        """
+        return self._by_key.get(file_path)
+
+    # Legacy API compatibility
     def get_task_for_target(self, target_path: str) -> Optional[str]:
-        """Get the task name that produces a target, or None."""
-        return self._targets.get(target_path)
+        """Get the task name that produces a target, or None.
+
+        Legacy alias for find_producer_by_path().
+        """
+        return self._by_key.get(target_path)
 
     def __contains__(self, target_path: str) -> bool:
         """Check if a target path is registered."""
-        return target_path in self._targets
+        return target_path in self._by_key
 
     def __getitem__(self, target_path: str) -> str:
         """Get task name for target, raising KeyError if not found."""
-        return self._targets[target_path]
+        return self._by_key[target_path]
+
+    @property
+    def stats(self) -> dict:
+        """Return statistics about registered targets.
+
+        Useful for debugging and performance tuning.
+        """
+        return {
+            "exact_count": self._engine.exact_count,
+            "prefix_count": self._engine.prefix_count,
+            "custom_count": self._engine.custom_count,
+            "total_count": self._engine.total_count,
+        }
 
 
 class ExecNodeRegistry:

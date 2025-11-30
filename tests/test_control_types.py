@@ -135,20 +135,31 @@ class TestTaskRegistry:
 class TestTargetRegistry:
     """Tests for TargetRegistry class."""
 
-    def test_register_and_get(self):
-        """Register targets and retrieve task names."""
+    def test_register_legacy_and_get(self):
+        """Register legacy string targets and retrieve task names."""
         registry = TargetRegistry()
-        registry.register("/path/to/file.txt", "build_task")
-        registry.register("/path/to/other.txt", "other_task")
+        registry.register_legacy("/path/to/file.txt", "build_task")
+        registry.register_legacy("/path/to/other.txt", "other_task")
 
         assert registry.get_task_for_target("/path/to/file.txt") == "build_task"
         assert registry.get_task_for_target("/path/to/other.txt") == "other_task"
         assert registry.get_task_for_target("/nonexistent") is None
 
+    def test_register_target_object(self):
+        """Register Target objects and retrieve via find_producer."""
+        from doit.deps import FileTarget, FileDependency
+
+        registry = TargetRegistry()
+        target = FileTarget("/path/to/output.txt")
+        registry.register(target, "build_task")
+
+        dep = FileDependency("/path/to/output.txt")
+        assert registry.find_producer(dep) == "build_task"
+
     def test_contains(self):
         """Test target membership check."""
         registry = TargetRegistry()
-        registry.register("/path/file", "task1")
+        registry.register_legacy("/path/file", "task1")
 
         assert "/path/file" in registry
         assert "/other" not in registry
@@ -156,11 +167,174 @@ class TestTargetRegistry:
     def test_getitem(self):
         """Test __getitem__ access."""
         registry = TargetRegistry()
-        registry.register("/path/file", "task1")
+        registry.register_legacy("/path/file", "task1")
 
         assert registry["/path/file"] == "task1"
         with pytest.raises(KeyError):
             _ = registry["/nonexistent"]
+
+    def test_find_producer_by_path(self):
+        """Test legacy path-based lookup."""
+        registry = TargetRegistry()
+        registry.register_legacy("/path/file", "task1")
+
+        assert registry.find_producer_by_path("/path/file") == "task1"
+        assert registry.find_producer_by_path("/nonexistent") is None
+
+    def test_find_producer_with_target_object(self):
+        """Test finding producer with Target object and Dependency matching."""
+        from doit.deps import FileTarget, FileDependency
+
+        registry = TargetRegistry()
+        target = FileTarget("/path/to/output.txt")
+        registry.register(target, "build_task")
+
+        # Find producer using FileDependency
+        dep = FileDependency("/path/to/output.txt")
+        assert registry.find_producer(dep) == "build_task"
+
+    def test_find_producer_no_match(self):
+        """Test find_producer returns None when no match."""
+        from doit.deps import FileTarget, FileDependency
+
+        registry = TargetRegistry()
+        target = FileTarget("/path/to/output.txt")
+        registry.register(target, "build_task")
+
+        dep = FileDependency("/different/path.txt")
+        assert registry.find_producer(dep) is None
+
+    def test_duplicate_target_raises(self):
+        """Test that registering duplicate target raises InvalidTask."""
+        from doit.deps import FileTarget
+        from doit.exceptions import InvalidTask
+
+        registry = TargetRegistry()
+        target1 = FileTarget("/path/file.txt")
+        target2 = FileTarget("/path/file.txt")
+
+        registry.register(target1, "task1")
+        with pytest.raises(InvalidTask):
+            registry.register(target2, "task2")
+
+    def test_duplicate_legacy_target_raises(self):
+        """Test that registering duplicate legacy target raises InvalidTask."""
+        from doit.exceptions import InvalidTask
+
+        registry = TargetRegistry()
+        registry.register_legacy("/path/file", "task1")
+        with pytest.raises(InvalidTask):
+            registry.register_legacy("/path/file", "task2")
+
+
+class TestTargetRegistryPrefixMatching:
+    """Tests for TargetRegistry prefix matching via MatchingEngine."""
+
+    def test_directory_target_matches_file_dependency(self, tmp_path):
+        """Test that file dependency under directory target matches."""
+        from doit.deps import DirectoryTarget, FileDependency
+
+        registry = TargetRegistry()
+        target = DirectoryTarget(tmp_path / "output")
+        registry.register(target, "generate")
+
+        # File under the directory should match
+        dep = FileDependency(str(tmp_path / "output" / "file.txt"))
+        assert registry.find_producer(dep) == "generate"
+
+    def test_directory_target_no_match_outside(self, tmp_path):
+        """Test that file dependency outside directory target doesn't match."""
+        from doit.deps import DirectoryTarget, FileDependency
+
+        registry = TargetRegistry()
+        target = DirectoryTarget(tmp_path / "output")
+        registry.register(target, "generate")
+
+        # File outside the directory should not match
+        dep = FileDependency(str(tmp_path / "input" / "file.txt"))
+        assert registry.find_producer(dep) is None
+
+    def test_nested_directory_targets(self, tmp_path):
+        """Test that nested directories match the most specific one."""
+        from doit.deps import DirectoryTarget, FileDependency
+
+        registry = TargetRegistry()
+        registry.register(DirectoryTarget(tmp_path / "output"), "parent")
+        registry.register(DirectoryTarget(tmp_path / "output" / "processed"), "child")
+
+        # File in /output/raw/ matches parent
+        dep1 = FileDependency(str(tmp_path / "output" / "raw" / "file.txt"))
+        assert registry.find_producer(dep1) == "parent"
+
+        # File in /output/processed/ matches child (more specific)
+        dep2 = FileDependency(str(tmp_path / "output" / "processed" / "file.txt"))
+        assert registry.find_producer(dep2) == "child"
+
+    def test_exact_match_takes_priority(self, tmp_path):
+        """Test that exact match takes priority over prefix match."""
+        from doit.deps import DirectoryTarget, FileTarget, FileDependency
+
+        registry = TargetRegistry()
+        registry.register(DirectoryTarget(tmp_path / "output"), "dir_task")
+        specific_file = str(tmp_path / "output" / "specific.txt")
+        registry.register(FileTarget(specific_file), "file_task")
+
+        # The specific file should match file_task (exact), not dir_task (prefix)
+        dep = FileDependency(specific_file)
+        assert registry.find_producer(dep) == "file_task"
+
+        # Other files in directory should still match dir_task
+        dep2 = FileDependency(str(tmp_path / "output" / "other.txt"))
+        assert registry.find_producer(dep2) == "dir_task"
+
+    def test_find_all_producers(self, tmp_path):
+        """Test find_all_producers returns all matching tasks."""
+        from doit.deps import DirectoryTarget, FileDependency
+
+        registry = TargetRegistry()
+        registry.register(DirectoryTarget(tmp_path / "output"), "parent")
+        registry.register(DirectoryTarget(tmp_path / "output" / "processed"), "child")
+
+        # File under both directories should return both
+        dep = FileDependency(str(tmp_path / "output" / "processed" / "file.txt"))
+        producers = registry.find_all_producers(dep)
+        assert set(producers) == {"parent", "child"}
+
+    def test_s3_prefix_matching(self):
+        """Test S3 prefix targets work with S3 dependencies."""
+        from doit.deps import S3PrefixTarget, S3Dependency
+
+        registry = TargetRegistry()
+        registry.register(S3PrefixTarget("bucket", "output/data/"), "s3_task")
+
+        # S3 key under the prefix should match
+        dep = S3Dependency("bucket", "output/data/file.parquet")
+        assert registry.find_producer(dep) == "s3_task"
+
+    def test_s3_prefix_no_match_different_bucket(self):
+        """Test S3 prefix doesn't match different bucket."""
+        from doit.deps import S3PrefixTarget, S3Dependency
+
+        registry = TargetRegistry()
+        registry.register(S3PrefixTarget("bucket-a", "output/"), "task_a")
+
+        # Different bucket doesn't match
+        dep = S3Dependency("bucket-b", "output/file.txt")
+        assert registry.find_producer(dep) is None
+
+    def test_stats_property(self, tmp_path):
+        """Test stats property shows target counts by type."""
+        from doit.deps import DirectoryTarget, FileTarget
+
+        registry = TargetRegistry()
+        registry.register(FileTarget(str(tmp_path / "a.txt")), "task_a")
+        registry.register(FileTarget(str(tmp_path / "b.txt")), "task_b")
+        registry.register(DirectoryTarget(tmp_path / "output"), "task_c")
+
+        stats = registry.stats
+        assert stats["exact_count"] == 2
+        assert stats["prefix_count"] == 1
+        assert stats["total_count"] == 3
 
 
 class TestExecNodeRegistry:
