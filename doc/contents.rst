@@ -52,6 +52,7 @@ The total reading time for the whole documentation is about one hour.
    tools
    extending
    programmatic
+   taskgen
 
 
 Project
