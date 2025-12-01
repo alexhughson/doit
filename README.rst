@@ -51,6 +51,29 @@ It includes several extras like: parallel execution, auto execution (watch for f
 changes), shell tab-completion, DAG visualisation, IPython integration, and more.
 
 
+Key Features
+============
+
+**Multiple Interfaces**
+  - **dodo.py** - Traditional Python task definitions
+  - **doit.yaml** - Declarative YAML for shell command pipelines
+  - **Programmatic API** - Embed doit in your Python applications
+
+**Pattern-Based Task Generation**
+  - Use ``<capture>`` patterns to match files (like ``src/<module>.c``)
+  - Automatic task generation for all matching files
+  - Multi-dimensional patterns for cross-product task generation
+
+**Extensible Dependency System**
+  - Built-in: Files, tasks, S3 objects
+  - Custom: Extend with database rows, HTTP resources, etc.
+  - Automatic implicit dependencies between tasks
+
+**Reactive Execution**
+  - Outputs from one task automatically trigger dependent tasks
+  - Fixed-point iteration for dynamic pipelines
+  - Streaming execution model (tup-like)
+
 
 Sample Code
 ===========
@@ -107,7 +130,7 @@ Run from terminal::
 YAML Task Definition
 ====================
 
-For simple shell command pipelines, you can define tasks in a ``doit.yaml`` file:
+Define build systems without Python code using ``doit.yaml``:
 
 .. code:: yaml
 
@@ -133,17 +156,23 @@ Run with::
   $ pip install doit[yaml]
   $ doit-yaml
 
+  # Or preview without executing
+  $ doit-yaml --dry-run
+
 Features:
 
 - **Pattern-based generators**: Use ``<capture>`` placeholders to match files dynamically
 - **Variable injection**: Input paths available as ``{source}`` format strings and ``$source`` env vars
 - **Reactive execution**: Outputs from one stage automatically trigger the next stage
+- **Multiple input types**: Files, directories, S3 objects
+
+See full documentation: `YAML Task Definition <http://pydoit.org/yaml.html>`_
 
 
 Programmatic API
 ================
 
-For embedding doit in Python applications, use the programmatic API:
+Embed doit in Python applications with full control over execution:
 
 .. code:: python
 
@@ -165,7 +194,7 @@ For embedding doit in Python applications, use the programmatic API:
           if task.should_run:
               task.execute_and_submit()
 
-Pattern-based task generation:
+**Pattern-based task generation** with automatic dependency detection:
 
 .. code:: python
 
@@ -181,6 +210,26 @@ Pattern-based task generation:
 
   engine = ReactiveEngine(generators=[gen])
   result = engine.run()
+
+**S3 dependencies** for cloud data pipelines:
+
+.. code:: python
+
+  from doit.deps import S3Dependency, S3Target
+
+  Task(
+      name="process",
+      dependencies=[S3Dependency("bucket", "input/data.csv")],
+      outputs=[S3Target("bucket", "output/results.csv")],
+      actions=[process_data],
+  )
+
+See full documentation:
+
+- `Programmatic Interface <http://pydoit.org/programmatic.html>`_
+- `Pattern-Based Task Generation <http://pydoit.org/taskgen.html>`_
+- `Reactive Execution <http://pydoit.org/reactive.html>`_
+- `Dependencies <http://pydoit.org/dependencies.html>`_
 
 
 Project Details
@@ -210,19 +259,41 @@ see AUTHORS file
 install
 =======
 
-*doit* is tested on python 3.6 to 3.10.
+*doit* is tested on python 3.8+.
 
 The last version supporting python 2 is version 0.29.
 
 .. code:: bash
 
+ # Basic installation
  $ pip install doit
+
+ # With YAML task definition support
+ $ pip install doit[yaml]
+
+ # With S3 dependency support
+ $ pip install doit[s3]
+
+ # All extras
+ $ pip install doit[yaml,s3]
 
 
 dependencies
 =============
 
-- cloudpickle
+Core:
+
+- importlib-metadata
+
+Optional extras:
+
+- **yaml**: pyyaml (for doit.yaml task definitions)
+- **s3**: boto3 (for S3 dependencies and targets)
+- **toml**: tomli (for TOML configuration, Python <3.11)
+- **cloudpickle**: cloudpickle (for parallel execution)
+
+Platform-specific:
+
 - pyinotify (linux)
 - macfsevents (mac)
 
