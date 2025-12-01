@@ -15,6 +15,7 @@ Example:
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Dict, Any, Tuple, Optional
 
 
@@ -76,7 +77,22 @@ class FileOutput(Output):
     Example:
         FileOutput("build/<arch>/<module>.o")
         FileOutput("/output/processed/<doc>.txt")
+        FileOutput("output/<name>.json", base_path=Path("/data"))
     """
+    base_path: Optional[Path] = None
+
+    def __post_init__(self):
+        if isinstance(self.base_path, str):
+            self.base_path = Path(self.base_path)
+
+    def render(self, attrs: Dict[str, str]) -> str:
+        """Render pattern with attribute substitution and base_path."""
+        result = self.pattern
+        for name, value in attrs.items():
+            result = result.replace(f'<{name}>', value)
+        if self.base_path is not None:
+            result = str(self.base_path / result)
+        return result
 
     def create_target(self, rendered_path: str) -> Any:
         """Create a FileTarget for the rendered path."""
