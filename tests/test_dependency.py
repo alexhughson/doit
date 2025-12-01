@@ -5,11 +5,12 @@ from sys import executable
 import pytest
 
 from doit.task import Task
+from doit.deps import FileDependency, TaskDependency
 from doit.dependency import get_md5, get_file_md5
 from doit.dependency import DbmDB, Dependency
 from doit.dependency import DatabaseException, UptodateCalculator
 from doit.dependency import FileChangedChecker, MD5Checker, TimestampChecker
-from doit.dependency import DependencyStatus
+from doit.dependency import DependencyStatus, DependencyReason
 from .conftest import get_abspath, dep_manager_fixture
 
 # path to test folder
@@ -209,7 +210,8 @@ class TestSaveSuccess(object):
         ff.close()
 
         # save it
-        t1 = Task("taskId_X", None, [filePath])
+        t1 = Task("taskId_X", None,
+                  dependencies=[FileDependency(filePath)])
         pdep_manager.save_success(t1)
         expected = "a1bb792202ce163b4f0d17cb264c04e1"
         value = pdep_manager._get("taskId_X", filePath)
@@ -219,9 +221,22 @@ class TestSaveSuccess(object):
 
     def test_save_skip(self, pdep_manager, monkeypatch):
         filePath = get_abspath("data/dependency1")
-        t1 = Task("taskId_X", None, [filePath])
+        t1 = Task("taskId_X", None,
+                  dependencies=[FileDependency(filePath)])
         pdep_manager._set(t1.name, filePath, (345, 0, "fake"))
-        monkeypatch.setattr(os.path, 'getmtime', lambda x: 345)
+        # Mock os.stat to return st_mtime=345 (matching stored state)
+        # Only for the specific file, let other calls through
+        class MockStat:
+            st_mtime = 345
+            st_size = 0
+        original_stat = os.stat
+        def mock_stat(path, *args, **kwargs):
+            # Normalize path to string for comparison
+            path_str = str(path)
+            if filePath in path_str or path_str == filePath:
+                return MockStat()
+            return original_stat(path, *args, **kwargs)
+        monkeypatch.setattr(os, 'stat', mock_stat)
         # save but md5 is not modified
         pdep_manager.save_success(t1)
         got = pdep_manager._get("taskId_X", filePath)
@@ -239,7 +254,9 @@ class TestSaveSuccess(object):
         assert pdep_manager._get("taskId_X", filePath) is None
         assert pdep_manager._get("taskId_X", filePath2) is None
 
-        t1 = Task("taskId_X", None, [filePath, filePath2])
+        t1 = Task("taskId_X", None,
+                  dependencies=[FileDependency(filePath),
+                                FileDependency(filePath2)])
         pdep_manager.save_success(t1)
         assert pdep_manager._get("taskId_X", filePath) is not None
         assert pdep_manager._get("taskId_X", filePath2) is not None
@@ -355,29 +372,29 @@ class TestDependencyStatus(object):
     def test_add_reason(self):
         result = DependencyStatus(True)
         assert 'up-to-date' == result.status
-        assert not result.add_reason('changed_file_dep', 'f1')
+        assert not result.add_reason(DependencyReason.CHANGED_FILE_DEP, 'f1')
         assert 'run' == result.status
-        assert not result.add_reason('changed_file_dep', 'f2')
-        assert ['f1', 'f2'] == result.reasons['changed_file_dep']
+        assert not result.add_reason(DependencyReason.CHANGED_FILE_DEP, 'f2')
+        assert ['f1', 'f2'] == result.reasons[DependencyReason.CHANGED_FILE_DEP]
 
     def test_add_reason_error(self):
         result = DependencyStatus(True)
         assert 'up-to-date' == result.status
-        assert not result.add_reason('missing_file_dep', 'f1', 'error')
+        assert not result.add_reason(DependencyReason.MISSING_FILE_DEP, 'f1', 'error')
         assert 'error' == result.status
-        assert ['f1'] == result.reasons['missing_file_dep']
+        assert ['f1'] == result.reasons[DependencyReason.MISSING_FILE_DEP]
 
     def test_set_reason(self):
         result = DependencyStatus(True)
         assert 'up-to-date' == result.status
-        assert not result.set_reason('has_no_dependencies', True)
+        assert not result.set_reason(DependencyReason.HAS_NO_DEPENDENCIES, True)
         assert 'run' == result.status
-        assert True == result.reasons['has_no_dependencies']
+        assert True == result.reasons[DependencyReason.HAS_NO_DEPENDENCIES]
 
     def test_no_log(self):
         result = DependencyStatus(False)
         assert 'up-to-date' == result.status
-        assert result.set_reason('has_no_dependencies', True)
+        assert result.set_reason(DependencyReason.HAS_NO_DEPENDENCIES, True)
         assert 'run' == result.status
 
     def test_get_error_message(self):
@@ -405,12 +422,11 @@ class TestGetStatus(object):
         ff.write("part1")
         ff.close()
 
-        dependencies = [filePath]
-        t1 = Task("t1", None, dependencies)
+        t1 = Task("t1", None, dependencies=[FileDependency(filePath)])
 
         # first time execute
         assert 'run' == pdep_manager.get_status(t1, {}).status
-        assert dependencies == t1.dep_changed
+        assert [filePath] == t1.dep_changed
 
         # second time no
         pdep_manager.save_success(t1)
@@ -426,7 +442,7 @@ class TestGetStatus(object):
 
         # execute again
         assert 'run' == pdep_manager.get_status(t1, {}).status
-        assert dependencies == t1.dep_changed
+        assert [filePath] == t1.dep_changed
 
     def test_fileDependencies_changed(self, pdep_manager):
         filePath = get_abspath("data/dependency1")
@@ -439,12 +455,12 @@ class TestGetStatus(object):
         ff.write("part1")
         ff.close()
 
-        dependencies = [filePath, filePath2]
-        t1 = Task("t1", None, dependencies)
+        t1 = Task("t1", None, dependencies=[FileDependency(filePath),
+                                            FileDependency(filePath2)])
 
         # first time execute
         assert 'run' == pdep_manager.get_status(t1, {}).status
-        assert sorted(dependencies) == sorted(t1.dep_changed)
+        assert sorted([filePath, filePath2]) == sorted(t1.dep_changed)
 
         # second time no
         pdep_manager.save_success(t1)
@@ -452,7 +468,7 @@ class TestGetStatus(object):
         assert [] == t1.dep_changed
 
         # remove dependency filePath2
-        t1 = Task("t1", None, [filePath])
+        t1 = Task("t1", None, dependencies=[FileDependency(filePath)])
         # execute again
         assert 'run' == pdep_manager.get_status(t1, {}).status
         assert [] == t1.dep_changed
@@ -469,7 +485,7 @@ class TestGetStatus(object):
         ff.write("part1")
         ff.close()
 
-        t1 = Task("t1", None, [filePath])
+        t1 = Task("t1", None, dependencies=[FileDependency(filePath)])
 
         # first time execute
         result = pdep_manager.get_status(t1, {}, get_log=True)
@@ -478,22 +494,22 @@ class TestGetStatus(object):
         pdep_manager.save_success(t1)
 
         # second time
-        t1b = Task("t1", None, [filePath2])
+        t1b = Task("t1", None, dependencies=[FileDependency(filePath2)])
         result = pdep_manager.get_status(t1b, {}, get_log=True)
         assert 'run' == result.status
         assert [filePath2] == t1b.dep_changed
-        assert [filePath] == result.reasons['removed_file_dep']
-        assert [filePath2] == result.reasons['added_file_dep']
+        assert [filePath] == result.reasons[DependencyReason.REMOVED_FILE_DEP]
+        assert [filePath2] == result.reasons[DependencyReason.ADDED_FILE_DEP]
 
 
     def test_file_dependency_not_exist(self, pdep_manager):
         filePath = get_abspath("data/dependency_not_exist")
-        t1 = Task("t1", None, [filePath])
+        t1 = Task("t1", None, dependencies=[FileDependency(filePath)])
         assert 'error' == pdep_manager.get_status(t1, {}).status
 
 
     def test_change_checker(self, pdep_manager, dependency1):
-        t1 = Task("taskId_X", None, [dependency1])
+        t1 = Task("taskId_X", None, dependencies=[FileDependency(dependency1)])
         pdep_manager.checker = TimestampChecker()
         pdep_manager.save_success(t1)
         assert 'up-to-date' == pdep_manager.get_status(t1, {}).status
@@ -522,7 +538,8 @@ class TestGetStatus(object):
         ff.write("part1")
         ff.close()
 
-        t1 = Task("t1", None, file_dep=[filePath], uptodate=[False])
+        t1 = Task("t1", None, dependencies=[FileDependency(filePath)],
+                  uptodate=[False])
 
         # first time execute
         assert 'run' == pdep_manager.get_status(t1, {}).status
@@ -544,7 +561,8 @@ class TestGetStatus(object):
         ff.write("part1")
         ff.close()
 
-        t1 = Task("t1", None, file_dep=[filePath], uptodate=[None])
+        t1 = Task("t1", None, dependencies=[FileDependency(filePath)],
+                  uptodate=[None])
 
         # first time execute
         assert 'run' == pdep_manager.get_status(t1, {}).status
@@ -571,7 +589,8 @@ class TestGetStatus(object):
 
         def check(task, values):
             return False
-        t1 = Task("t1", None, file_dep=[filePath], uptodate=[check])
+        t1 = Task("t1", None, dependencies=[FileDependency(filePath)],
+                  uptodate=[check])
 
         # first time execute
         assert 'run' == pdep_manager.get_status(t1, {}).status
@@ -655,7 +674,8 @@ class TestGetStatus(object):
         if os.path.exists(target):
             os.remove(target)
 
-        t1 = Task("task x", None, [dependency1], [target])
+        t1 = Task("task x", None, dependencies=[FileDependency(dependency1)],
+                  targets=[target])
         pdep_manager.save_success(t1)
         assert 'run' == pdep_manager.get_status(t1, {}).status
         assert [dependency1] == t1.dep_changed
@@ -667,9 +687,9 @@ class TestGetStatus(object):
         ff.write("part1")
         ff.close()
 
-        deps = [dependency1]
         targets = [filePath]
-        t1 = Task("task X", None, deps, targets)
+        t1 = Task("task X", None, dependencies=[FileDependency(dependency1)],
+                  targets=targets)
 
         pdep_manager.save_success(t1)
         # up-to-date because target exist
@@ -679,15 +699,15 @@ class TestGetStatus(object):
 
     def test_targetFolder(self, pdep_manager, dependency1):
         # folder not there. task is not up-to-date
-        deps = [dependency1]
         folderPath = get_abspath("data/target-folder")
         if os.path.exists(folderPath):
             os.rmdir(folderPath)
-        t1 = Task("task x", None, deps, [folderPath])
+        t1 = Task("task x", None, dependencies=[FileDependency(dependency1)],
+                  targets=[folderPath])
         pdep_manager.save_success(t1)
 
         assert 'run' == pdep_manager.get_status(t1, {}).status
-        assert deps == t1.dep_changed
+        assert [dependency1] == t1.dep_changed
         # create folder. task is up-to-date
         os.mkdir(folderPath)
         assert 'up-to-date' == pdep_manager.get_status(t1, {}).status

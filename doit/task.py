@@ -6,12 +6,15 @@ import sys
 import inspect
 from collections import OrderedDict
 from collections.abc import Callable
-from pathlib import PurePath
+from pathlib import Path, PurePath
 
-from .cmdparse import CmdOption, TaskParse
+import warnings
+
+from .cmdparse import CmdOption, TaskParse, normalize_option
 from .exceptions import BaseFail, InvalidTask
 from .action import create_action, PythonAction
-from .dependency import UptodateCalculator
+from .dependency import UptodateCalculator, StorageKey
+from .deps import Dependency, FileDependency, TaskDependency, Target
 
 
 def first_line(doc):
@@ -148,11 +151,13 @@ class Task(object):
     valid_attr = {'basename': (string_types, ()),
                   'name': (string_types, ()),
                   'actions': ((list, tuple), (None,)),
-                  'file_dep': ((list, tuple), ()),
-                  'task_dep': ((list, tuple), ()),
+                  'dependencies': ((list, tuple), ()),
+                  'file_dep': ((list, tuple, set), ()),  # legacy dict format
+                  'task_dep': ((list, tuple), ()),       # legacy dict format
                   'uptodate': ((list, tuple), ()),
                   'calc_dep': ((list, tuple), ()),
                   'targets': ((list, tuple), ()),
+                  'outputs': ((list, tuple), ()),        # Target objects
                   'setup': ((list, tuple), ()),
                   'clean': ((list, tuple), (True,)),
                   'teardown': ((list, tuple), ()),
@@ -164,12 +169,12 @@ class Task(object):
                   'getargs': ((dict,), ()),
                   'title': ((Callable,), (None,)),
                   'watch': ((list, tuple), ()),
-                  'meta': ((dict,), (None,))
+                  'meta': ((dict,), (None,)),
                   }
 
 
-    def __init__(self, name, actions, file_dep=(), targets=(),
-                 task_dep=(), uptodate=(),
+    def __init__(self, name, actions, dependencies=(), targets=(),
+                 outputs=(), uptodate=(),
                  calc_dep=(), setup=(), clean=(), teardown=(),
                  subtask_of=None, has_subtask=False,
                  doc=None, params=(), pos_arg=None,
@@ -183,11 +188,12 @@ class Task(object):
         getargs = getargs or {}  # default
         self.check_attr(name, 'name', name, self.valid_attr['name'])
         self.check_attr(name, 'actions', actions, self.valid_attr['actions'])
-        self.check_attr(name, 'file_dep', file_dep, self.valid_attr['file_dep'])
-        self.check_attr(name, 'task_dep', task_dep, self.valid_attr['task_dep'])
+        self.check_attr(name, 'dependencies', dependencies,
+                        self.valid_attr['dependencies'])
         self.check_attr(name, 'uptodate', uptodate, self.valid_attr['uptodate'])
         self.check_attr(name, 'calc_dep', calc_dep, self.valid_attr['calc_dep'])
         self.check_attr(name, 'targets', targets, self.valid_attr['targets'])
+        self.check_attr(name, 'outputs', outputs, self.valid_attr['outputs'])
         self.check_attr(name, 'setup', setup, self.valid_attr['setup'])
         self.check_attr(name, 'clean', clean, self.valid_attr['clean'])
         self.check_attr(name, 'teardown', teardown, self.valid_attr['teardown'])
@@ -220,12 +226,12 @@ class Task(object):
         else:
             self._actions = list(actions[:])
 
-        self._init_deps(file_dep, task_dep, calc_dep)
+        self._init_deps(dependencies, calc_dep)
 
-        # loaders create an implicity task_dep
+        # loaders create an implicit task_dep
         self.loader = loader
         if self.loader and self.loader.task_dep:
-            self.task_dep.append(loader.task_dep)
+            self._dependencies.append(TaskDependency(loader.task_dep))
 
         uptodate = uptodate if uptodate else []
 
@@ -237,6 +243,7 @@ class Task(object):
         self.uptodate = self._init_uptodate(uptodate)
 
         self.targets = self._init_targets(targets)
+        self._outputs = self._init_outputs(name, outputs)
         self.subtask_of = subtask_of
         self.has_subtask = has_subtask
         self.result = None
@@ -261,25 +268,74 @@ class Task(object):
         self.executed = False
 
 
-    def _init_deps(self, file_dep, task_dep, calc_dep):
+    def _init_deps(self, dependencies, calc_dep):
         """init for dependency related attributes"""
         self.dep_changed = None
 
-        # file_dep
-        self.file_dep = set()
-        self._expand_file_dep(file_dep)
-
-        # task_dep
-        self.task_dep = []
-        self.wild_dep = []
-        if task_dep:
-            self._expand_task_dep(task_dep)
+        # Dependencies (Dependency objects)
+        self._dependencies = []
+        self.wild_dep = []  # Wildcard task deps like "task:*"
+        self._init_dependencies(dependencies)
 
         # calc_dep
         self.calc_dep = set()
         if calc_dep:
             self._expand_calc_dep(calc_dep)
 
+    def _init_dependencies(self, dependencies):
+        """Initialize dependencies list from Dependency objects."""
+        for dep in dependencies:
+            if isinstance(dep, Dependency):
+                # Handle wildcard task deps
+                if isinstance(dep, TaskDependency) and "*" in dep.task_name:
+                    self.wild_dep.append(dep.task_name)
+                else:
+                    self._dependencies.append(dep)
+            else:
+                msg = ("%s. dependencies must be Dependency objects. "
+                       "Got '%r' (%s)")
+                raise InvalidTask(msg % (self.name, dep, type(dep)))
+
+    @property
+    def dependencies(self):
+        """Return list of Dependency objects."""
+        return self._dependencies
+
+    @property
+    def file_dep(self):
+        """Return set of file dependency paths (for backward compatibility).
+
+        Returns the original paths (may be relative) to maintain compatibility
+        with implicit task dependency resolution (target->file_dep matching).
+        """
+        return {d.path for d in self._dependencies
+                if isinstance(d, FileDependency)}
+
+    @property
+    def task_dep(self):
+        """Return list of task dependency names (for backward compatibility)."""
+        return [d.task_name for d in self._dependencies
+                if isinstance(d, TaskDependency)]
+
+    def add_task_dep(self, task_name):
+        """Add an implicit task dependency (e.g., from target->file_dep matching)."""
+        if task_name not in self.task_dep:
+            self._dependencies.append(TaskDependency(task_name))
+
+    def add_file_dep(self, file_path):
+        """Add a file dependency dynamically (e.g., from an action)."""
+        if file_path not in self.file_dep:
+            self._dependencies.append(FileDependency(file_path))
+
+    def clear_task_deps(self):
+        """Remove all task dependencies (used by --single mode)."""
+        self._dependencies = [d for d in self._dependencies
+                              if not isinstance(d, TaskDependency)]
+
+    def clear_file_deps(self):
+        """Remove all file dependencies (used for regex target matching)."""
+        self._dependencies = [d for d in self._dependencies
+                              if not isinstance(d, FileDependency)]
 
     def _init_targets(self, items):
         """convert valid targets to `str`"""
@@ -294,6 +350,26 @@ class Task(object):
                 raise InvalidTask(msg % (self.name, target, type(target)))
         return targets
 
+    def _init_outputs(self, task_name, items):
+        """Validate and initialize outputs (Target objects).
+
+        @param task_name: Name of task (for error messages)
+        @param items: List of Target objects
+        @return: List of validated Target objects
+        @raises InvalidTask: If any item is not a Target instance
+        """
+        outputs = []
+        for output in items:
+            if not isinstance(output, Target):
+                msg = ("%s. outputs must be Target objects. Got '%r' (%s)")
+                raise InvalidTask(msg % (task_name, output, type(output)))
+            outputs.append(output)
+        return outputs
+
+    @property
+    def outputs(self):
+        """Return list of Target objects (task outputs)."""
+        return self._outputs
 
     def _init_uptodate(self, items):
         """wrap uptodate callables"""
@@ -323,47 +399,64 @@ class Task(object):
         return uptodate
 
 
-    def _expand_file_dep(self, file_dep):
-        """put input into file_dep"""
-        for dep in file_dep:
-            if isinstance(dep, str):
-                self.file_dep.add(dep)
-            elif isinstance(dep, PurePath):
-                self.file_dep.add(str(dep))
-            else:
-                msg = ("%s. file_dep must be a str or Path from pathlib. "
-                       "Got '%r' (%s)")
-                raise InvalidTask(msg % (self.name, dep, type(dep)))
-
-
-    def _expand_task_dep(self, task_dep):
-        """convert task_dep input into actaul task_dep and wild_dep"""
-        for dep in task_dep:
-            if "*" in dep:
-                self.wild_dep.append(dep)
-            else:
-                self.task_dep.append(dep)
-
-
     def _expand_calc_dep(self, calc_dep):
         """calc_dep input"""
         for dep in calc_dep:
             if dep not in self.calc_dep:
                 self.calc_dep.add(dep)
 
-
     def _extend_uptodate(self, uptodate):
         """add/extend uptodate values"""
         self.uptodate.extend(self._init_uptodate(uptodate))
 
+    def _extend_dependencies(self, dependencies):
+        """add/extend dependencies"""
+        for dep in dependencies:
+            if isinstance(dep, Dependency):
+                if isinstance(dep, TaskDependency) and "*" in dep.task_name:
+                    self.wild_dep.append(dep.task_name)
+                else:
+                    self._dependencies.append(dep)
+            else:
+                msg = ("%s. dependencies must be Dependency objects. "
+                       "Got '%r' (%s)")
+                raise InvalidTask(msg % (self.name, dep, type(dep)))
+
+    def _extend_file_dep(self, file_deps):
+        """Add file dependencies from calc_dep results (legacy format).
+
+        Converts string paths to FileDependency objects.
+        """
+        for dep in file_deps:
+            if isinstance(dep, str):
+                self._dependencies.append(FileDependency(dep))
+            elif isinstance(dep, PurePath):
+                self._dependencies.append(FileDependency(str(dep)))
+            else:
+                msg = ("%s. file_dep must be a str or Path. Got '%r' (%s)")
+                raise InvalidTask(msg % (self.name, dep, type(dep)))
+
+    def _extend_task_dep(self, task_deps):
+        """Add task dependencies from calc_dep results (legacy format).
+
+        Converts string task names to TaskDependency objects.
+        """
+        for dep in task_deps:
+            if isinstance(dep, str):
+                if "*" in dep:
+                    self.wild_dep.append(dep)
+                else:
+                    self._dependencies.append(TaskDependency(dep))
 
     # FIXME should support setup also
     _expand_map = {
-        'task_dep': _expand_task_dep,
-        'file_dep': _expand_file_dep,
+        'dependencies': _extend_dependencies,
         'calc_dep': _expand_calc_dep,
         'uptodate': _extend_uptodate,
+        'file_dep': _extend_file_dep,
+        'task_dep': _extend_task_dep,
     }
+
     def update_deps(self, deps):
         """expand all kinds of dep input"""
         for dep, dep_values in deps.items():
@@ -383,7 +476,7 @@ class Task(object):
         if self.options is None:
             self.options = {}
             all_opts = list(self.params) + self.creator_params
-            taskcmd = TaskParse([CmdOption(opt) for opt in all_opts])
+            taskcmd = TaskParse([normalize_option(opt) for opt in all_opts])
             if self.cfg_values is not None:
                 taskcmd.overwrite_defaults(self.cfg_values)
 
@@ -530,37 +623,6 @@ class Task(object):
     def __repr__(self):
         return f"<Task: {self.name}>"
 
-
-    def __getstate__(self):
-        """remove attributes that never used on process that only execute tasks
-        """
-        to_pickle = self.__dict__.copy()
-        # never executed in sub-process
-        to_pickle['uptodate'] = None
-        to_pickle['value_savers'] = None
-        # can be re-recreated on demand
-        to_pickle['_action_instances'] = None
-        return to_pickle
-
-    # when using multiprocessing Tasks are pickled.
-    def pickle_safe_dict(self):
-        """remove attributes that might contain unpickleble content
-        mostly probably closures
-        """
-        to_pickle = self.__dict__.copy()
-        del to_pickle['_actions']
-        del to_pickle['_action_instances']
-        del to_pickle['clean_actions']
-        del to_pickle['teardown']
-        del to_pickle['custom_title']
-        del to_pickle['value_savers']
-        del to_pickle['uptodate']
-        return to_pickle
-
-    def update_from_pickle(self, pickle_obj):
-        """update self with data from pickled Task"""
-        self.__dict__.update(pickle_obj)
-
     def __eq__(self, other):
         return self.name == other.name
 
@@ -592,26 +654,70 @@ def dict_to_task(task_dict):
             name = task_dict['name']
             raise InvalidTask(f"Task {name} contains invalid field: '{key}'")
 
+    # Convert legacy file_dep/task_dep to dependencies
+    task_dict = _convert_legacy_deps(task_dict)
+
     return Task(**task_dict)
+
+
+def _convert_legacy_deps(task_dict):
+    """Convert legacy file_dep/task_dep dict keys to dependencies.
+
+    This maintains backward compatibility with dodo file format.
+    """
+    file_dep = task_dict.pop('file_dep', None)
+    task_dep = task_dict.pop('task_dep', None)
+
+    if file_dep is None and task_dep is None:
+        return task_dict
+
+    # Get existing dependencies or create empty list
+    deps = list(task_dict.get('dependencies', []))
+
+    # Convert file_dep strings to FileDependency objects
+    if file_dep:
+        for dep in file_dep:
+            if isinstance(dep, str):
+                deps.append(FileDependency(dep))
+            elif isinstance(dep, PurePath):
+                deps.append(FileDependency(str(dep)))
+            else:
+                name = task_dict.get('name', '<unknown>')
+                msg = "%s. file_dep must be a str or Path. Got '%r' (%s)"
+                raise InvalidTask(msg % (name, dep, type(dep)))
+
+    # Convert task_dep strings to TaskDependency objects
+    if task_dep:
+        for dep in task_dep:
+            if isinstance(dep, str):
+                deps.append(TaskDependency(dep))
+            else:
+                name = task_dict.get('name', '<unknown>')
+                msg = "%s. task_dep must be a str. Got '%r' (%s)"
+                raise InvalidTask(msg % (name, dep, type(dep)))
+
+    task_dict['dependencies'] = deps
+    return task_dict
 
 
 
 def clean_targets(task, dryrun):
     """remove all targets from a task"""
     for target in sorted(task.targets, reverse=True):
-        if os.path.isfile(target):
+        target_path = Path(target)
+        if target_path.is_file():
             print("%s - removing file '%s'" % (task.name, target))
             if not dryrun:
-                os.remove(target)
-        elif os.path.isdir(target):
-            if os.listdir(target):
+                target_path.unlink()
+        elif target_path.is_dir():
+            if any(target_path.iterdir()):
                 msg = "%s - cannot remove (it is not empty) '%s'"
                 print(msg % (task.name, target))
             else:
                 msg = "%s - removing dir '%s'"
                 print(msg % (task.name, target))
                 if not dryrun:
-                    os.rmdir(target)
+                    target_path.rmdir()
 
 
 # uptodate
@@ -632,12 +738,12 @@ class result_dep(UptodateCalculator):
         if self.setup_dep:
             task.setup_tasks.append(self.dep_name)
         else:
-            task.task_dep.append(self.dep_name)
+            task._dependencies.append(TaskDependency(self.dep_name))
 
 
     def _result_single(self):
         """get result from a single task"""
-        return self.get_val(self.dep_name, 'result:')
+        return self.get_val(self.dep_name, StorageKey.RESULT)
 
     def _result_group(self, dep_task):
         """get result from a group task
@@ -647,7 +753,7 @@ class result_dep(UptodateCalculator):
         sub_tasks = {}
         for sub in dep_task.task_dep:
             if sub.startswith(prefix):
-                sub_tasks[sub] = self.get_val(sub, 'result:')
+                sub_tasks[sub] = self.get_val(sub, StorageKey.RESULT)
         return sub_tasks
 
     def _get_dep_result(self, dep_task):

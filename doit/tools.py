@@ -1,6 +1,7 @@
 """extra goodies to be used in dodo files"""
 
 import os
+from pathlib import Path
 import time as time_module
 import datetime
 import json
@@ -264,7 +265,7 @@ def load_ipython_extension(ip=None):  # pragma: no cover
     from IPython.core.getipython import get_ipython
     from IPython.core.magic import register_line_magic
 
-    from doit.cmd_base import ModuleTaskLoader
+    from doit.cmd.base import ModuleTaskLoader
     from doit.doit_cmd import DoitMain
 
     # Only (re)load_ext provides the ip context.
@@ -295,7 +296,7 @@ def load_ipython_extension(ip=None):  # pragma: no cover
         # Override db-files location inside ipython-profile dir,
         # which is certainly writable.
         prof_dir = ip.profile_dir.location
-        opt_vals = {'dep_file': os.path.join(prof_dir, 'db', '.doit.db')}
+        opt_vals = {'dep_file': str(Path(prof_dir) / 'db' / '.doit.db')}
         commander = DoitMain(ModuleTaskLoader(ip.user_module),
                              extra_config={'GLOBAL': opt_vals})
         commander.BIN_NAME = 'doit'

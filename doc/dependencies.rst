@@ -403,4 +403,354 @@ from a module. The dependencies itself are calculated on task ``get_dep``
 .. literalinclude:: samples/calc_dep.py
 
 
+.. _extensible-deps:
+
+Extensible Dependency System
+==============================
+
+doit includes an extensible dependency and target system that allows you to
+create custom dependency types for any resource (S3 objects, databases, APIs, etc.).
+
+Dependency and Target Classes
+-------------------------------
+
+The core of the extensible system is built on abstract base classes:
+
+* ``Dependency``: Base class for all dependency types (inputs)
+* ``Target``: Base class for all target types (outputs)
+
+Built-in implementations include:
+
+* ``FileDependency`` / ``FileTarget``: Local file dependencies and targets
+* ``TaskDependency``: Dependencies on other tasks
+* ``S3Dependency`` / ``S3Target``: AWS S3 object dependencies and targets (requires boto3)
+
+
+Using the Dependency Objects
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Instead of using string-based ``file_dep`` and ``task_dep``, you can use
+``Dependency`` objects in the ``dependencies`` parameter:
+
+.. code-block:: python
+
+    from doit.deps import FileDependency, TaskDependency
+    from doit.task import Task
+
+    def task_compile():
+        return {
+            'actions': ['gcc -c main.c -o main.o'],
+            'dependencies': [
+                FileDependency('main.c'),
+                FileDependency('header.h'),
+                TaskDependency('setup'),
+            ],
+            'targets': ['main.o'],
+        }
+
+
+Using Target Objects (outputs)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+For advanced use cases, you can use ``Target`` objects in the ``outputs`` parameter.
+This enables automatic implicit task dependency matching:
+
+.. code-block:: python
+
+    from doit.deps import FileDependency, FileTarget
+    from doit.task import Task
+
+    def task_generate():
+        return {
+            'actions': ['generate-data > data.csv'],
+            'outputs': [FileTarget('data.csv')],
+        }
+
+    def task_process():
+        return {
+            'actions': ['process data.csv'],
+            'dependencies': [FileDependency('data.csv')],
+        }
+
+When using ``outputs`` with ``Target`` objects, doit automatically creates
+implicit task dependencies when a task's ``Dependency`` matches another task's
+``Target``.
+
+
+S3 Dependencies
+-----------------
+
+doit includes built-in support for AWS S3 dependencies. This requires ``boto3``
+to be installed (``pip install boto3``).
+
+.. code-block:: python
+
+    from doit.deps import S3Dependency, S3Target
+
+    def task_upload():
+        return {
+            'actions': ['aws s3 cp local.csv s3://my-bucket/data.csv'],
+            'dependencies': [FileDependency('local.csv')],
+            'outputs': [S3Target('my-bucket', 'data.csv')],
+        }
+
+    def task_process():
+        return {
+            'actions': ['process-s3-data'],
+            'dependencies': [S3Dependency('my-bucket', 'data.csv')],
+        }
+
+S3 change detection uses ETags (content hashes) for reliable detection
+of modifications, similar to how ``file_dep`` uses file timestamps and MD5 hashes.
+
+S3 credentials can be configured via:
+
+* Default AWS credentials (environment variables, ~/.aws/credentials)
+* ``profile`` parameter for specific AWS profiles
+* ``region`` parameter for specific regions
+
+
+Creating Custom Dependency Types
+---------------------------------
+
+You can create custom dependency types by subclassing ``Dependency`` and ``Target``.
+Here's an example for a database table dependency:
+
+.. code-block:: python
+
+    from dataclasses import dataclass, field
+    from typing import Any, Optional
+    from doit.deps import Dependency, Target, CheckStatus, DependencyCheckResult
+
+    @dataclass
+    class DatabaseTableDependency(Dependency):
+        """Dependency on a database table's state."""
+
+        table: str
+        query: str  # Query to get current state (e.g., count, max ID, checksum)
+        connection_string: str
+        _conn: Any = field(init=False, repr=False, default=None)
+
+        def get_key(self) -> str:
+            """Return unique identifier for this dependency."""
+            return f"db://{self.table}?{self.query}"
+
+        def exists(self) -> bool:
+            """Check if table exists."""
+            # Implementation depends on your database
+            return True
+
+        def is_modified(self, stored_state: Any) -> bool:
+            """Check if table content changed."""
+            if stored_state is None:
+                return True
+            current = self._get_current_state()
+            return current != stored_state
+
+        def get_state(self, current_state: Any) -> Any:
+            """Get current table state for storage."""
+            return self._get_current_state()
+
+        def check_status(self, stored_state: Any) -> DependencyCheckResult:
+            """Complete status check."""
+            if not self.exists():
+                return DependencyCheckResult(
+                    status=CheckStatus.ERROR,
+                    reason=f"Table '{self.table}' does not exist"
+                )
+            if self.is_modified(stored_state):
+                return DependencyCheckResult(
+                    status=CheckStatus.CHANGED,
+                    reason=f"Table '{self.table}' has been modified"
+                )
+            return DependencyCheckResult(status=CheckStatus.UP_TO_DATE)
+
+        def _get_current_state(self):
+            # Execute query and return result
+            pass
+
+
+    @dataclass
+    class DatabaseTableTarget(Target):
+        """Target representing a database table output."""
+
+        table: str
+        connection_string: str
+
+        def get_key(self) -> str:
+            return f"db://{self.table}"
+
+        def exists(self) -> bool:
+            # Check if table exists
+            return True
+
+        def matches_dependency(self, dep: Dependency) -> bool:
+            """Match if dependency refers to same table."""
+            if isinstance(dep, DatabaseTableDependency):
+                return self.table == dep.table
+            return False
+
+The key methods to implement:
+
+* ``get_key()``: Return a unique URI-like identifier
+* ``exists()``: Check if the resource exists
+* ``is_modified(stored_state)``: Compare current state with stored state
+* ``get_state(current_state)``: Return current state for storage
+* ``check_status(stored_state)``: Complete status check with result object
+* ``matches_dependency(dep)``: For Target classes, custom matching logic
+
+
+.. _prefix-dependencies:
+
+Prefix-Based Dependencies
+---------------------------
+
+Sometimes you don't know exactly which files a task will produce, but you know
+they'll all be under a specific directory or S3 prefix. doit supports prefix-based
+matching where:
+
+* A task can declare it outputs to a *directory prefix* (e.g., ``/output/data/``)
+* Another task can depend on files under that directory
+* doit automatically detects the dependency relationship
+
+This is useful for:
+
+* Data pipelines where a task generates multiple files with dynamic names
+* Build systems where a compilation step produces many intermediate files
+* ETL workflows where the exact output files are determined at runtime
+
+Directory Dependencies and Targets
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Use ``DirectoryDependency`` and ``DirectoryTarget`` for local filesystem prefixes:
+
+.. code-block:: python
+
+    from doit.deps import DirectoryDependency, DirectoryTarget, FileDependency
+
+    def task_generate():
+        """Task that generates files in a directory."""
+        return {
+            'actions': ['generate-reports --output=/output/reports/'],
+            'outputs': [DirectoryTarget('/output/reports/')],
+        }
+
+    def task_process():
+        """Task that depends on files in that directory."""
+        return {
+            'actions': ['process /output/reports/summary.csv'],
+            'dependencies': [
+                # This file is under /output/reports/, so it matches
+                FileDependency('/output/reports/summary.csv'),
+            ],
+        }
+
+In this example, ``task_process`` automatically depends on ``task_generate``
+because its file dependency is under the directory target.
+
+**Key behaviors:**
+
+* Directory keys always end with a trailing slash (``/``)
+* Matching uses the *longest prefix* rule - if multiple directory targets match,
+  the most specific one wins
+* Exact file matches take priority over prefix matches
+
+S3 Prefix Dependencies and Targets
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Use ``S3PrefixDependency`` and ``S3PrefixTarget`` for S3 prefixes:
+
+.. code-block:: python
+
+    from doit.deps import S3PrefixDependency, S3PrefixTarget, S3Dependency
+
+    def task_etl():
+        """ETL task that writes to an S3 prefix."""
+        return {
+            'actions': ['spark-submit etl.py --output=s3://bucket/data/processed/'],
+            'outputs': [S3PrefixTarget('bucket', 'data/processed/')],
+        }
+
+    def task_analyze():
+        """Analysis task that reads from that prefix."""
+        return {
+            'actions': ['analyze-data'],
+            'dependencies': [
+                S3Dependency('bucket', 'data/processed/2024/sales.parquet'),
+            ],
+        }
+
+S3 prefix matching respects bucket boundaries - a prefix in one bucket won't
+match dependencies in a different bucket.
+
+Pattern-Based Task Generation with Prefixes
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The ``taskgen`` module includes prefix-aware input/output classes for
+pattern-based task generation:
+
+.. code-block:: python
+
+    from doit.taskgen import (
+        TaskGenerator, FileInput, DirectoryOutput, S3PrefixOutput
+    )
+
+    # Generator task that outputs to a directory
+    gen = TaskGenerator(
+        name="generate:<partition>",
+        inputs={"config": FileInput("configs/<partition>.yaml")},
+        outputs=[DirectoryOutput("output/<partition>/")],
+        action=lambda inp, out, attrs: f"generate --config={inp['config'].key} --output={out[0]}",
+    )
+
+    # Consumer task that depends on files in that directory
+    consumer = TaskGenerator(
+        name="process:<partition>",
+        inputs={"data": FileInput("output/<partition>/data.csv")},
+        outputs=[FileOutput("results/<partition>.json")],
+        action=lambda inp, out, attrs: f"process {inp['data'].key} > {out[0]}",
+    )
+
+The prefix matching automatically connects these tasks - when processing
+``output/2024/data.csv``, doit knows it depends on the ``generate:2024`` task.
+
+Matching Strategy
+^^^^^^^^^^^^^^^^^^^
+
+Each dependency and target has a *match strategy*:
+
+* **EXACT**: Keys must match exactly (default for ``FileDependency``, ``S3Dependency``)
+* **PREFIX**: Key is a prefix that matches anything under it (``DirectoryTarget``, ``S3PrefixTarget``)
+* **CUSTOM**: Uses custom ``matches()`` method for complex matching logic
+
+When finding which task produces a dependency, doit checks in priority order:
+
+1. Exact matches (O(1) dictionary lookup)
+2. Prefix matches (O(log n) trie-based lookup, longest prefix wins)
+3. Custom matches (O(n) linear scan)
+
+
+Key Format Guidelines
+^^^^^^^^^^^^^^^^^^^^^^^
+
+Use URI-like formats for dependency keys:
+
++---------------+------------------------+-------------------------------+
+| Type          | Key Format             | Example                       |
++===============+========================+===============================+
+| File          | Absolute path          | ``/home/user/data.txt``       |
++---------------+------------------------+-------------------------------+
+| Directory     | Absolute path + /      | ``/home/user/data/``          |
++---------------+------------------------+-------------------------------+
+| Task          | ``task:name``          | ``task:build``                |
++---------------+------------------------+-------------------------------+
+| S3            | ``s3://bucket/key``    | ``s3://my-bucket/data.csv``   |
++---------------+------------------------+-------------------------------+
+| S3 Prefix     | ``s3://bucket/prefix/``| ``s3://my-bucket/data/``      |
++---------------+------------------------+-------------------------------+
+| Database      | ``db://table?query``   | ``db://users?count``          |
++---------------+------------------------+-------------------------------+
+| HTTP          | ``http[s]://url``      | ``https://api.example.com/v1``|
++---------------+------------------------+-------------------------------+
+
 

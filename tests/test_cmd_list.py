@@ -4,8 +4,9 @@ import pytest
 
 from doit.exceptions import InvalidCommand
 from doit.task import Task
+from doit.deps import FileDependency, TaskDependency
 from doit.tools import result_dep
-from doit.cmd_list import List
+from doit.cmd.list import List
 from tests.conftest import tasks_sample, tasks_bad_sample, CmdFactory
 
 
@@ -44,7 +45,7 @@ class TestCmdList(object):
         assert 'xxx t3 xxx t3 doc string' == got[3]
 
     def testDependencies(self):
-        my_task = Task("t2", [""], file_dep=['d2.txt'])
+        my_task = Task("t2", [""], dependencies=[FileDependency('d2.txt')])
         output = StringIO()
         cmd_list = CmdFactory(List, outstream=output, task_list=[my_task])
         cmd_list._execute(list_deps=True)

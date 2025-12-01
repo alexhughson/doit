@@ -6,23 +6,24 @@ import traceback
 from collections import defaultdict
 from configparser import ConfigParser
 import importlib
+from pathlib import Path
 
 from .version import VERSION
 from .plugin import PluginDict
 from .exceptions import InvalidDodoFile, InvalidCommand, InvalidTask
-from .cmdparse import CmdOption, CmdParseError, CmdParse
-from .cmd_base import get_loader
-from .cmd_help import Help
-from .cmd_run import Run
-from .cmd_clean import Clean
-from .cmd_list import List
-from .cmd_info import Info
-from .cmd_forget import Forget
-from .cmd_ignore import Ignore
-from .cmd_dumpdb import DumpDB
-from .cmd_strace import Strace
-from .cmd_completion import TabCompletion
-from .cmd_resetdep import ResetDep
+from .cmdparse import CmdOption, CmdParseError, CmdParse, normalize_option
+from .cmd.base import get_loader
+from .cmd.help import Help
+from .cmd.run import Run
+from .cmd.clean import Clean
+from .cmd.list import List
+from .cmd.info import Info
+from .cmd.forget import Forget
+from .cmd.ignore import Ignore
+from .cmd.dumpdb import DumpDB
+from .cmd.strace import Strace
+from .cmd.completion import TabCompletion
+from .cmd.resetdep import ResetDep
 
 
 # used to save variable values passed from command line
@@ -110,7 +111,7 @@ class DoitConfig():
         toml_config = {}
         raw = None
 
-        if os.path.exists(filename):
+        if Path(filename).exists():
             if not self.toml:
                 sys.stderr.write(
                     f'''WARNING: File "{filename}" might contain doit configuration,'''
@@ -169,8 +170,8 @@ class DoitMain(object):
         if isinstance(config_filenames, str):
             config_filenames = [config_filenames]
 
-        # ignore config files do that not exist
-        config_filenames = [fn for fn in config_filenames if os.path.exists(fn)]
+        # ignore config files that do not exist
+        config_filenames = [fn for fn in config_filenames if Path(fn).exists()]
 
         self.config = defaultdict(dict)
         if extra_config:
@@ -189,7 +190,7 @@ class DoitMain(object):
     def print_version():
         """print doit version (includes path location)"""
         print(".".join([str(i) for i in VERSION]))
-        print("lib @", os.path.dirname(os.path.abspath(__file__)))
+        print("lib @", str(Path(__file__).resolve().parent))
 
 
     def get_cmds(self):
@@ -263,7 +264,7 @@ class DoitMain(object):
         # loader command options might appear before command name
         try:
             loader_opt_parser = CmdParse(
-                [CmdOption(opt) for opt in task_loader.cmd_options])
+                [normalize_option(opt) for opt in task_loader.cmd_options])
             loader_params, cmd_args = loader_opt_parser.parse_only(all_args)
         except CmdParseError:
             # normal to fail parsing if RUN command is not explicit

@@ -4,8 +4,10 @@ import pytest
 
 from doit.exceptions import InvalidDodoFile, InvalidCommand
 from doit.task import Stream, InvalidTask, Task, DelayedLoader
-from doit.control import TaskControl, TaskDispatcher, ExecNode
+from doit.deps import FileDependency, TaskDependency
+from doit.control import TaskControl, TaskDispatcher, ExecNode, TargetRegistry
 from doit.control import no_none
+from doit.control.types import TaskRunStatus
 
 
 
@@ -18,8 +20,8 @@ class TestTaskControlInit(object):
         assert 2 == len(tc.tasks)
 
     def test_targetDependency(self):
-        t1 = Task("taskX", None,[],['intermediate'])
-        t2 = Task("taskY", None,['intermediate'],[])
+        t1 = Task("taskX", None, targets=['intermediate'])
+        t2 = Task("taskY", None, dependencies=[FileDependency('intermediate')])
         TaskControl([t1, t2])
         assert ['taskX'] == t2.task_dep
 
@@ -33,7 +35,7 @@ class TestTaskControlInit(object):
         pytest.raises(InvalidTask, TaskControl, [666])
 
     def test_userErrorTaskDependency(self):
-        tasks = [Task('wrong', None, task_dep=["typo"])]
+        tasks = [Task('wrong', None, dependencies=[TaskDependency("typo")])]
         pytest.raises(InvalidTask, TaskControl, tasks)
 
     def test_userErrorSetupTask(self):
@@ -47,14 +49,15 @@ class TestTaskControlInit(object):
 
 
     def test_wild(self):
-        tasks = [Task('t1',None, task_dep=['foo*']),
-                 Task('foo4',None,)]
+        tasks = [Task('t1', None, dependencies=[TaskDependency('foo*')]),
+                 Task('foo4', None,)]
         TaskControl(tasks)
         assert 'foo4' in tasks[0].task_dep
 
     def test_bug770150_task_dependency_from_target(self):
-        t1 = Task("taskX", None, file_dep=[], targets=['intermediate'])
-        t2 = Task("taskY", None, file_dep=['intermediate'], task_dep=['taskZ'])
+        t1 = Task("taskX", None, targets=['intermediate'])
+        t2 = Task("taskY", None, dependencies=[
+            FileDependency('intermediate'), TaskDependency('taskZ')])
         t3 = Task("taskZ", None)
         TaskControl([t1, t2, t3])
         assert ['taskZ', 'taskX'] == t2.task_dep
@@ -229,7 +232,7 @@ class TestExecNode(object):
     def test_parent_status_failure(self):
         n1 = ExecNode(Task('t1', None), None)
         n2 = ExecNode(Task('t2', None), None)
-        n1.run_status = 'failure'
+        n1.run_status = TaskRunStatus.FAILURE
         n2.parent_status(n1)
         assert [n1] == n2.bad_deps
         assert [] == n2.ignored_deps
@@ -237,7 +240,7 @@ class TestExecNode(object):
     def test_parent_status_ignore(self):
         n1 = ExecNode(Task('t1', None), None)
         n2 = ExecNode(Task('t2', None), None)
-        n1.run_status = 'ignore'
+        n1.run_status = TaskRunStatus.IGNORE
         n2.parent_status(n1)
         assert [] == n2.bad_deps
         assert [n1] == n2.ignored_deps
@@ -268,7 +271,7 @@ class TestDecoratorNoNone(object):
 class TestTaskDispatcher_GenNone(object):
     def test_create(self):
         tasks = {'t1': Task('t1', None)}
-        td = TaskDispatcher(tasks, [], None)
+        td = TaskDispatcher(tasks, [], TargetRegistry(), None)
         node = td._gen_node(None, 't1')
         assert isinstance(node, ExecNode)
         assert node == td.nodes['t1']
@@ -277,7 +280,7 @@ class TestTaskDispatcher_GenNone(object):
         tasks = {'t1': Task('t1', None),
                  't2': Task('t2', None)
                  }
-        td = TaskDispatcher(tasks, [], None)
+        td = TaskDispatcher(tasks, [], TargetRegistry(), None)
         n1 = td._gen_node(None, 't1')
         td._gen_node(n1, 't2')
         assert None == td._gen_node(None, 't1')
@@ -286,7 +289,7 @@ class TestTaskDispatcher_GenNone(object):
         tasks = {'t1': Task('t1', None),
                  't2': Task('t2', None)
                  }
-        td = TaskDispatcher(tasks, [], None)
+        td = TaskDispatcher(tasks, [], TargetRegistry(), None)
         n1 = td._gen_node(None, 't1')
         n2 = td._gen_node(n1, 't2')
         pytest.raises(InvalidDodoFile, td._gen_node, n2, 't1')
@@ -298,7 +301,7 @@ class TestTaskDispatcher_node_add_wait_run(object):
         tasks = {'t1': Task('t1', None),
                  't2': Task('t2', None),
                  }
-        td = TaskDispatcher(tasks, [], None)
+        td = TaskDispatcher(tasks, [], TargetRegistry(), None)
         n1 = td._gen_node(None, 't1')
         n2 = td._gen_node(None, 't2')
         n1.wait_run.add('xxx')
@@ -312,10 +315,10 @@ class TestTaskDispatcher_node_add_wait_run(object):
         tasks = {'t1': Task('t1', None),
                  't2': Task('t2', None),
                  }
-        td = TaskDispatcher(tasks, [], None)
+        td = TaskDispatcher(tasks, [], TargetRegistry(), None)
         n1 = td._gen_node(None, 't1')
         n2 = td._gen_node(None, 't2')
-        n2.run_status = 'done'
+        n2.run_status = TaskRunStatus.DONE
         td._node_add_wait_run(n1, ['t2'])
         assert not n1.wait_run
 
@@ -323,10 +326,10 @@ class TestTaskDispatcher_node_add_wait_run(object):
         tasks = {'t1': Task('t1', None),
                  't2': Task('t2', None),
                  }
-        td = TaskDispatcher(tasks, [], None)
+        td = TaskDispatcher(tasks, [], TargetRegistry(), None)
         n1 = td._gen_node(None, 't1')
         n2 = td._gen_node(None, 't2')
-        n2.run_status = 'failure'
+        n2.run_status = TaskRunStatus.FAILURE
         td._node_add_wait_run(n1, ['t2'])
         assert n1.bad_deps
 
@@ -334,10 +337,10 @@ class TestTaskDispatcher_node_add_wait_run(object):
         tasks = {'t1': Task('t1', None, calc_dep=['t2']),
                  't2': Task('t2', None),
                  }
-        td = TaskDispatcher(tasks, [], None)
+        td = TaskDispatcher(tasks, [], TargetRegistry(), None)
         n1 = td._gen_node(None, 't1')
         n2 = td._gen_node(None, 't2')
-        n2.run_status = 'done'
+        n2.run_status = TaskRunStatus.DONE
         n2.task.values = {'calc_dep': ['t3'], 'task_dep':['t5']}
         td._node_add_wait_run(n1, ['t2'], calc=True)
         # n1 is updated with results from t2
@@ -351,16 +354,17 @@ class TestTaskDispatcher_add_task(object):
     def test_no_deps(self):
         tasks = {'t1': Task('t1', None),
                  }
-        td = TaskDispatcher(tasks, [], None)
+        td = TaskDispatcher(tasks, [], TargetRegistry(), None)
         n1 = td._gen_node(None, 't1')
         assert [tasks['t1']] == list(td._add_task(n1))
 
     def test_task_deps(self):
-        tasks = {'t1': Task('t1', None, task_dep=['t2', 't3']),
+        tasks = {'t1': Task('t1', None, dependencies=[
+                     TaskDependency('t2'), TaskDependency('t3')]),
                  't2': Task('t2', None),
                  't3': Task('t3', None),
                  }
-        td = TaskDispatcher(tasks, [], None)
+        td = TaskDispatcher(tasks, [], TargetRegistry(), None)
         n1 = td._gen_node(None, 't1')
         gen = td._add_task(n1)
         n2 = next(gen)
@@ -368,33 +372,33 @@ class TestTaskDispatcher_add_task(object):
         n3 = next(gen)
         assert tasks['t3'] == n3.task
         assert 'wait' == next(gen)
-        tasks['t2'].run_status = 'done'
+        tasks['t2'].run_status = TaskRunStatus.DONE
         td._update_waiting(n2)
-        tasks['t3'].run_status = 'done'
+        tasks['t3'].run_status = TaskRunStatus.DONE
         td._update_waiting(n3)
         assert tasks['t1'] == next(gen)
 
     def test_task_deps_already_created(self):
-        tasks = {'t1': Task('t1', None, task_dep=['t2']),
+        tasks = {'t1': Task('t1', None, dependencies=[TaskDependency('t2')]),
                  't2': Task('t2', None),
                  }
-        td = TaskDispatcher(tasks, [], None)
+        td = TaskDispatcher(tasks, [], TargetRegistry(), None)
         n1 = td._gen_node(None, 't1')
         n2 = td._gen_node(None, 't2')
         assert 'wait' == n1.step()
         assert 'wait' == n1.step()
-        #tasks['t2'].run_status = 'done'
+        #tasks['t2'].run_status = TaskRunStatus.DONE
         td._update_waiting(n2)
         assert tasks['t1'] == n1.step()
 
     def test_task_deps_no_wait(self):
-        tasks = {'t1': Task('t1', None, task_dep=['t2']),
+        tasks = {'t1': Task('t1', None, dependencies=[TaskDependency('t2')]),
                  't2': Task('t2', None),
                  }
-        td = TaskDispatcher(tasks, [], None)
+        td = TaskDispatcher(tasks, [], TargetRegistry(), None)
         n1 = td._gen_node(None, 't1')
         n2 = td._gen_node(None, 't2')
-        n2.run_status = 'done'
+        n2.run_status = TaskRunStatus.DONE
         gen = td._add_task(n1)
         assert tasks['t1'] == next(gen)
 
@@ -405,14 +409,14 @@ class TestTaskDispatcher_add_task(object):
                  't2': Task('t2', [calc_intermediate]),
                  't3': Task('t3', None, targets=['intermediate']),
                  }
-        td = TaskDispatcher(tasks, {'intermediate': 't3'}, None)
+        td = TaskDispatcher(tasks, {'intermediate': 't3'}, TargetRegistry(), None)
         n1 = td._gen_node(None, 't1')
         n2 = n1.step()
         assert tasks['t2'] == n2.task
         assert 'wait' == n1.step()
         # execute t2 to process calc_dep
         tasks['t2'].execute(Stream(0))
-        td.nodes['t2'].run_status = 'done'
+        td.nodes['t2'].run_status = TaskRunStatus.DONE
         td._update_waiting(n2)
         n3 = n1.step()
         assert tasks['t3'] == n3.task
@@ -421,7 +425,7 @@ class TestTaskDispatcher_add_task(object):
 
         # t3 was added by calc dep
         assert 'wait' == n1.step()
-        n3.run_status = 'done'
+        n3.run_status = TaskRunStatus.DONE
         td._update_waiting(n3)
         assert tasks['t1'] == n1.step()
 
@@ -431,10 +435,10 @@ class TestTaskDispatcher_add_task(object):
                  't2': Task('t2', None),
                  't3': Task('t3', None),
                  }
-        td = TaskDispatcher(tasks, {'intermediate': 't3'}, None)
+        td = TaskDispatcher(tasks, {'intermediate': 't3'}, TargetRegistry(), None)
         n1 = td._gen_node(None, 't1')
         n2 = td._gen_node(None, 't2')
-        n2.run_status = 'done'
+        n2.run_status = TaskRunStatus.DONE
         n2.task.values = {'calc_dep': ['t3']}
         assert 't3' == n1.step().task.name
         assert set() == n1.wait_run
@@ -446,12 +450,12 @@ class TestTaskDispatcher_add_task(object):
         tasks = {'t1': Task('t1', None, setup=['t2']),
                  't2': Task('t2', None),
                  }
-        td = TaskDispatcher(tasks, [], None)
+        td = TaskDispatcher(tasks, [], TargetRegistry(), None)
         n1 = td._gen_node(None, 't1')
         gen = td._add_task(n1)
         assert tasks['t1'] == next(gen) # first time (just select)
         assert 'wait' == next(gen)      # wait for select result
-        n1.run_status = 'run'
+        n1.run_status = TaskRunStatus.RUN
         assert tasks['t2'] == next(gen).task # send setup task
         assert 'wait' == next(gen)
         assert tasks['t1'] == next(gen)  # second time
@@ -464,7 +468,7 @@ class TestTaskDispatcher_add_task(object):
         tasks = {'t1': Task('t1', None, loader=delayed_loader),
                  't2': Task('t2', None),
                  }
-        td = TaskDispatcher(tasks, [], None)
+        td = TaskDispatcher(tasks, [], TargetRegistry(), None)
         n1 = td._gen_node(None, 't1')
         gen = td._add_task(n1)
 
@@ -503,7 +507,7 @@ class TestTaskDispatcher_add_task(object):
         tasks['t1:xxx'] = Task('t1:xxx', None, loader=delayed_loader)
         delayed_loader.basename = 't1'
 
-        td = TaskDispatcher(tasks, [], None)
+        td = TaskDispatcher(tasks, [], TargetRegistry(), None)
         n1 = td._gen_node(None, 't1:foo')
         gen = td._add_task(n1)
 
@@ -516,7 +520,7 @@ class TestTaskDispatcher_add_task(object):
         assert n1c == 'wait'
 
         # after t2 is done, generator is reseted
-        n1b.run_status = 'successful'
+        n1b.run_status = TaskRunStatus.SUCCESSFUL
         td._update_waiting(n1b)
         n1d = next(gen)
         assert n1d == "reset generator"
@@ -550,7 +554,7 @@ class TestTaskDispatcher_add_task(object):
         tc = TaskControl(list(tasks.values()))
         selection = tc._filter_tasks(['tgt1'])
         assert ['_regex_target_tgt1:t1'] == selection
-        td = TaskDispatcher(tc.tasks, tc.targets, selection)
+        td = TaskDispatcher(tc.tasks, tc.targets, tc.targets_registry, selection)
 
         n1 = td._gen_node(None, '_regex_target_tgt1:t1')
         gen = td._add_task(n1)
@@ -564,7 +568,7 @@ class TestTaskDispatcher_add_task(object):
         assert n3 == 'wait'
 
         # after t2 is done, generator is reseted
-        n2.run_status = 'done'
+        n2.run_status = TaskRunStatus.DONE
         td._update_waiting(n2)
         n4 = next(gen)
         assert n4 == "reset generator"
@@ -579,14 +583,14 @@ class TestTaskDispatcher_add_task(object):
         assert n5.task.name == 'foo'
 
         # get internal created task
-        n5.run_status = 'done'
+        n5.run_status = TaskRunStatus.DONE
         td._update_waiting(n5)
         n6 = next(gen2)
         assert n6.name == '_regex_target_tgt1:t1'
 
         # file_dep is removed because foo might not be task
         # that creates this task (support for multi regex matches)
-        assert n6.file_dep == {}
+        assert n6.file_dep == set()
 
 
     def test_regex_group_already_created(self):
@@ -605,7 +609,7 @@ class TestTaskDispatcher_add_task(object):
         tc = TaskControl([t1, t2])
         selection = tc._filter_tasks(['tgt1'])
         assert ['_regex_target_tgt1:t1', '_regex_target_tgt1:t2'] == selection
-        td = TaskDispatcher(tc.tasks, tc.targets, selection)
+        td = TaskDispatcher(tc.tasks, tc.targets, tc.targets_registry, selection)
 
         n1 = td._gen_node(None, '_regex_target_tgt1:t1')
         gen = td._add_task(n1)
@@ -624,7 +628,7 @@ class TestTaskDispatcher_add_task(object):
         assert n1c.task.name == 'foo1'
 
         # get internal created task
-        n1c.run_status = 'done'
+        n1c.run_status = TaskRunStatus.DONE
         td._update_waiting(n1c)
         n1d = next(gen1b)
         assert n1d.name == '_regex_target_tgt1:t1'
@@ -646,7 +650,7 @@ class TestTaskDispatcher_add_task(object):
         tc = TaskControl([t1])
         selection = tc._filter_tasks(['tgt666'])
         assert ['_regex_target_tgt666:t1'] == selection
-        td = TaskDispatcher(tc.tasks, tc.targets, selection)
+        td = TaskDispatcher(tc.tasks, tc.targets, tc.targets_registry, selection)
 
         n1 = td._gen_node(None, '_regex_target_tgt666:t1')
         gen = td._add_task(n1)
@@ -658,27 +662,27 @@ class TestTaskDispatcher_add_task(object):
 
 class TestTaskDispatcher_get_next_node(object):
     def test_none(self):
-        tasks = {'t1': Task('t1', None, task_dep=['t2']),
+        tasks = {'t1': Task('t1', None, dependencies=[TaskDependency('t2')]),
                  't2': Task('t2', None),
                  }
-        td = TaskDispatcher(tasks, [], None)
+        td = TaskDispatcher(tasks, [], TargetRegistry(), None)
         assert None == td._get_next_node([], [])
 
     def test_ready(self):
         tasks = {'t1': Task('t1', None),
                  't2': Task('t2', None),
                  }
-        td = TaskDispatcher(tasks, [], None)
+        td = TaskDispatcher(tasks, [], TargetRegistry(), None)
         n1 = td._gen_node(None, 't1')
         ready = deque([n1])
         assert n1 == td._get_next_node(ready, ['t2'])
         assert 0 == len(ready)
 
     def test_to_run(self):
-        tasks = {'t1': Task('t1', None, task_dep=['t2']),
+        tasks = {'t1': Task('t1', None, dependencies=[TaskDependency('t2')]),
                  't2': Task('t2', None),
                  }
-        td = TaskDispatcher(tasks, [], None)
+        td = TaskDispatcher(tasks, [], TargetRegistry(), None)
         to_run = ['t2', 't1']
         td._gen_node(None, 't1') # t1 was already created
         got = td._get_next_node([], to_run)
@@ -689,7 +693,7 @@ class TestTaskDispatcher_get_next_node(object):
     def test_to_run_none(self):
         tasks = {'t1': Task('t1', None),
                  }
-        td = TaskDispatcher(tasks, [], None)
+        td = TaskDispatcher(tasks, [], TargetRegistry(), None)
         td._gen_node(None, 't1') # t1 was already created
         to_run = ['t1']
         assert None == td._get_next_node([], to_run)
@@ -698,27 +702,27 @@ class TestTaskDispatcher_get_next_node(object):
 
 class TestTaskDispatcher_update_waiting(object):
     def test_wait_select(self):
-        tasks = {'t1': Task('t1', None, task_dep=['t2']),
+        tasks = {'t1': Task('t1', None, dependencies=[TaskDependency('t2')]),
                  't2': Task('t2', None),
                  }
-        td = TaskDispatcher(tasks, [], None)
+        td = TaskDispatcher(tasks, [], TargetRegistry(), None)
         n2 = td._gen_node(None, 't2')
         n2.wait_select = True
-        n2.run_status = 'run'
+        n2.run_status = TaskRunStatus.RUN
         td.waiting.add(n2)
         td._update_waiting(n2)
         assert False == n2.wait_select
         assert deque([n2]) == td.ready
 
     def test_wait_run(self):
-        tasks = {'t1': Task('t1', None, task_dep=['t2']),
+        tasks = {'t1': Task('t1', None, dependencies=[TaskDependency('t2')]),
                  't2': Task('t2', None),
                  }
-        td = TaskDispatcher(tasks, [], None)
+        td = TaskDispatcher(tasks, [], TargetRegistry(), None)
         n1 = td._gen_node(None, 't1')
         n2 = td._gen_node(None, 't2')
         td._node_add_wait_run(n1, ['t2'])
-        n2.run_status = 'done'
+        n2.run_status = TaskRunStatus.DONE
         td.waiting.add(n1)
         td._update_waiting(n2)
         assert not n1.bad_deps
@@ -726,14 +730,14 @@ class TestTaskDispatcher_update_waiting(object):
         assert 0 == len(td.waiting)
 
     def test_wait_run_deps_not_ok(self):
-        tasks = {'t1': Task('t1', None, task_dep=['t2']),
+        tasks = {'t1': Task('t1', None, dependencies=[TaskDependency('t2')]),
                  't2': Task('t2', None),
                  }
-        td = TaskDispatcher(tasks, [], None)
+        td = TaskDispatcher(tasks, [], TargetRegistry(), None)
         n1 = td._gen_node(None, 't1')
         n2 = td._gen_node(None, 't2')
         td._node_add_wait_run(n1, ['t2'])
-        n2.run_status = 'failure'
+        n2.run_status = TaskRunStatus.FAILURE
         td.waiting.add(n1)
         td._update_waiting(n2)
         assert n1.bad_deps
@@ -741,12 +745,13 @@ class TestTaskDispatcher_update_waiting(object):
         assert 0 == len(td.waiting)
 
     def test_waiting_node_updated(self):
-        tasks = {'t1': Task('t1', None, calc_dep=['t2'], task_dep=['t4']),
+        tasks = {'t1': Task('t1', None, calc_dep=['t2'],
+                            dependencies=[TaskDependency('t4')]),
                  't2': Task('t2', None),
                  't3': Task('t3', None),
                  't4': Task('t4', None),
                  }
-        td = TaskDispatcher(tasks, [], None)
+        td = TaskDispatcher(tasks, [], TargetRegistry(), None)
         n1 = td._gen_node(None, 't1')
         n1_gen = td._add_task(n1)
         n2 = next(n1_gen)
@@ -756,7 +761,7 @@ class TestTaskDispatcher_update_waiting(object):
         assert set() == n1.calc_dep
         assert td.waiting == set()
 
-        n2.run_status = 'done'
+        n2.run_status = TaskRunStatus.DONE
         n2.task.values = {'calc_dep': ['t2', 't3'], 'task_dep':['t5']}
         assert n1.calc_dep == set()
         assert n1.task_dep == []
@@ -768,7 +773,7 @@ class TestTaskDispatcher_update_waiting(object):
 
 class TestTaskDispatcher_dispatcher_generator(object):
     def test_normal(self):
-        tasks = [Task("t1", None, task_dep=["t2"]),
+        tasks = [Task("t1", None, dependencies=[TaskDependency("t2")]),
                  Task("t2", None,)]
         control = TaskControl(tasks)
         control.process(['t1'])
@@ -787,7 +792,7 @@ class TestTaskDispatcher_dispatcher_generator(object):
             yield {'name': 'foo2', 'actions': None, 'targets': ['bar']}
 
         delayed_loader = DelayedLoader(creator, executed='t2')
-        tasks = [Task('t0', None, task_dep=['t1']),
+        tasks = [Task('t0', None, dependencies=[TaskDependency('t1')]),
                  Task('t1', None, loader=delayed_loader),
                  Task('t2', None)]
 

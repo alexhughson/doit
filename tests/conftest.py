@@ -8,7 +8,8 @@ import pytest
 from doit.dependency import Dependency, MD5Checker
 from doit.dependency import DbmDB, JsonDB, SqliteDB
 from doit.task import Task
-from doit.cmd_base import get_loader
+from doit.deps import FileDependency, TaskDependency
+from doit.cmd.base import get_loader
 
 
 # compatibility to run tests even if xdist is not installed
@@ -154,24 +155,25 @@ def tasks_sample(dep1=None):
                 },
             ]),
         # 1
-        Task("t2", [""], file_dep=[file_dep], doc="t2 doc string"),
+        Task("t2", [""], dependencies=[FileDependency(file_dep)], doc="t2 doc string"),
         # 2
-        Task("g1", None, doc="g1 doc string", has_subtask=True),
+        Task("g1", None, doc="g1 doc string", has_subtask=True,
+             dependencies=[TaskDependency('g1.a'), TaskDependency('g1.b')]),
         # 3
         Task("g1.a", [""], doc="g1.a doc string", subtask_of='g1'),
         # 4
         Task("g1.b", [""], doc="g1.b doc string", subtask_of='g1'),
         # 5
-        Task("t3", [""], doc="t3 doc string", task_dep=["t1"])
+        Task("t3", [""], doc="t3 doc string", dependencies=[TaskDependency("t1")])
     ]
-    tasks_sample[2].task_dep = ['g1.a', 'g1.b']
     return tasks_sample
 
 
 def tasks_bad_sample():
     """Create list of tasks that cause errors."""
     bad_sample = [
-        Task("e1", [""], doc='e4 bad file dep', file_dep=['xxxx'])
+        Task("e1", [""], doc='e4 bad file dep',
+             dependencies=[FileDependency('xxxx')])
     ]
     return bad_sample
 

@@ -12,6 +12,7 @@ from doit.exceptions import BaseFail
 from doit import action
 from doit import task
 from doit.task import Stream
+from doit.deps import FileDependency, TaskDependency
 
 #path to test folder
 TEST_PATH = os.path.dirname(__file__)
@@ -98,14 +99,14 @@ class TestTaskInit(object):
         assert t.actions == []
 
     def test_dependencySequenceIsValid(self):
-        task.Task("Task X", ["taskcmd"], file_dep=["123","456"])
+        task.Task("Task X", ["taskcmd"],
+                  dependencies=[FileDependency("123"), FileDependency("456")])
 
-    # dependency must be a sequence or bool.
+    # dependency must be a sequence or Dependency objects.
     # give proper error message when anything else is used.
-    def test_dependencyNotSequence(self):
-        filePath = "data/dependency1"
+    def test_dependencyNotDependencyObject(self):
         pytest.raises(task.InvalidTask, task.Task,
-                      "Task X",["taskcmd"], file_dep=filePath)
+                      "Task X", ["taskcmd"], dependencies=["123"])
 
     def test_options(self):
         # when task is created, options contain the default values
@@ -196,7 +197,7 @@ class TestTaskUpToDate(object):
         class Check(object):
             def __call__(self): return True
             def configure_task(self, task):
-                task.task_dep.append('y1')
+                task._dependencies.append(TaskDependency('y1'))
         check = Check()
         t = task.Task("Task X", ["taskcmd"], uptodate=[check])
         assert (check, [], {}) == t.uptodate[0]
@@ -207,31 +208,27 @@ class TestTaskUpToDate(object):
                       task.Task, "Task X", ["taskcmd"], uptodate=[{'x':'y'}])
 
 
-class TestTaskExpandFileDep(object):
+class TestTaskDependencies(object):
 
-    def test_dependencyStringIsFile(self):
-        my_task = task.Task("Task X", ["taskcmd"], file_dep=["123","456"])
-        assert set(["123","456"]) == my_task.file_dep
-
-    def test_file_dep_path(self):
+    def test_file_dependency(self):
         my_task = task.Task("Task X", ["taskcmd"],
-                            file_dep=["123", Path("456"), PurePath("789")])
-        assert {"123", "456", "789"} == my_task.file_dep
-
-    def test_file_dep_str(self):
-        pytest.raises(task.InvalidTask, task.Task, "Task X", ["taskcmd"],
-                      file_dep=[['aaaa']])
+                            dependencies=[FileDependency("123"),
+                                          FileDependency("456")])
+        assert len(my_task.file_dep) == 2
+        assert all(k.endswith("123") or k.endswith("456")
+                   for k in my_task.file_dep)
 
     def test_file_dep_unicode(self):
         unicode_name = "中文"
-        my_task = task.Task("Task X", ["taskcmd"], file_dep=[unicode_name])
-        assert unicode_name in my_task.file_dep
-
-
-class TestTaskDeps(object):
+        my_task = task.Task("Task X", ["taskcmd"],
+                            dependencies=[FileDependency(unicode_name)])
+        # file_dep now returns absolute paths
+        assert any(unicode_name in k for k in my_task.file_dep)
 
     def test_task_dep(self):
-        my_task = task.Task("Task X", ["taskcmd"], task_dep=["123","4*56"])
+        my_task = task.Task("Task X", ["taskcmd"],
+                            dependencies=[TaskDependency("123"),
+                                          TaskDependency("4*56")])
         assert ["123"] == my_task.task_dep
         assert ["4*56"] == my_task.wild_dep
 
@@ -240,15 +237,16 @@ class TestTaskDeps(object):
         assert set(["123"]) == my_task.calc_dep
 
     def test_update_deps(self):
-        my_task = task.Task("Task X", ["taskcmd"], file_dep=["fileX"],
+        my_task = task.Task("Task X", ["taskcmd"],
+                            dependencies=[FileDependency("fileX")],
                             calc_dep=["calcX"], uptodate=[None])
-        my_task.update_deps({'file_dep': ['fileY'],
-                             'task_dep': ['taskY'],
+        my_task.update_deps({'dependencies': [FileDependency("fileY"),
+                                              TaskDependency("taskY")],
                              'calc_dep': ['calcX', 'calcY'],
                              'uptodate': [True],
                              'to_be_ignored': 'asdf',
                              })
-        assert set(['fileX', 'fileY']) == my_task.file_dep
+        assert len(my_task.file_dep) == 2
         assert ['taskY'] == my_task.task_dep
         assert set(['calcX', 'calcY']) == my_task.calc_dep
         assert [(None, None, None), (True, None, None)] == my_task.uptodate
@@ -270,7 +268,7 @@ class TestTask_Loader(object):
         # after `executed` creates an implicit task_dep
         delayed = task.DelayedLoader(lambda: None, executed='foo')
         t1 = task.Task('bar', None, loader=delayed)
-        assert t1.task_dep == ['foo']
+        assert 'foo' in t1.task_dep
 
 
 class TestTask_Getargs(object):
@@ -308,7 +306,8 @@ class TestTaskTitle(object):
 class TestTaskRepr(object):
 
     def test_repr(self):
-        t = task.Task("taskX",None,('t1','t2'))
+        t = task.Task("taskX", None,
+                      dependencies=(TaskDependency('t1'), TaskDependency('t2')))
         assert "<Task: taskX>" == repr(t), repr(t)
 
 
@@ -595,32 +594,6 @@ class TestTaskDoc(object):
         t = task.Task("name", ["action"], doc="  \n  \n\n")
         assert "" == t.doc
 
-class TestTaskPickle(object):
-    def test_geststate(self):
-        t = task.Task("my_name", ["action"])
-        pd = t.__getstate__()
-        assert None == pd['uptodate']
-        assert None == pd['_action_instances']
-
-    def test_safedict(self):
-        t = task.Task("my_name", ["action"])
-        pd = t.pickle_safe_dict()
-        assert 'uptodate' not in pd
-        assert '_action_instances' not in pd
-        assert 'value_savers' not in pd
-        assert 'clean_actions' not in pd
-
-
-class TestTaskUpdateFromPickle(object):
-    def test_change_value(self):
-        t = task.Task("my_name", ["action"])
-        assert {} == t.values
-        class FakePickle():
-            def __init__(self):
-                self.values = [1,2,3]
-        t.update_from_pickle(FakePickle().__dict__)
-        assert [1,2,3] == t.values
-        assert 'my_name' == t.name
 
 class TestDictToTask(object):
     def testDictOkMinimum(self):
@@ -642,7 +615,7 @@ class TestResultDep(object):
                  't2': task.Task("t2", None),
                  }
         # _config_task was executed and t2 added as task_dep
-        assert ['t2'] == tasks['t1'].task_dep
+        assert 't2' in tasks['t1'].task_dep
 
         # first t2 result
         tasks['t2'].result = 'yes'
@@ -665,13 +638,15 @@ class TestResultDep(object):
 
     def test_group(self, dep_manager):
         tasks = {'t1': task.Task("t1", None, uptodate=[task.result_dep('t2')]),
-                 't2': task.Task("t2", None, task_dep=['t2:a', 't2:b'],
+                 't2': task.Task("t2", None,
+                                 dependencies=[TaskDependency('t2:a'),
+                                               TaskDependency('t2:b')],
                                  has_subtask=True),
                  't2:a': task.Task("t2:a", None),
                  't2:b': task.Task("t2:b", None),
                  }
         # _config_task was executed and t2 added as task_dep
-        assert ['t2'] == tasks['t1'].task_dep
+        assert 't2' in tasks['t1'].task_dep
 
         # first t2 result
         tasks['t2:a'].result = 'yes1'

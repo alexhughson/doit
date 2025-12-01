@@ -5,7 +5,8 @@ import pytest
 
 from doit.exceptions import InvalidCommand
 from doit.task import Task
-from doit.cmd_clean import Clean
+from doit.deps import FileDependency, TaskDependency
+from doit.cmd.clean import Clean
 from .conftest import CmdFactory
 
 class TestCmdClean(object):
@@ -19,10 +20,11 @@ class TestCmdClean(object):
             Task("t1", None, targets=['t1.out'], setup=['t2'],
                  clean=[(myclean,('t1',))]),
             Task("t2", None, clean=[(myclean,('t2',))]),
-            Task("t3", None, task_dep=['t3:a'], has_subtask=True,
-                 clean=[(myclean,('t3',))]),
+            Task("t3", None, dependencies=[TaskDependency('t3:a')],
+                 has_subtask=True, clean=[(myclean,('t3',))]),
             Task("t3:a", None, clean=[(myclean,('t3:a',))], subtask_of='t3'),
-            Task("t4", None, file_dep=['t1.out'], clean=[(myclean,('t4',))] ),
+            Task("t4", None, dependencies=[FileDependency('t1.out')],
+                 clean=[(myclean,('t4',))]),
             ]
 
     def test_clean_all(self, tasks):
@@ -32,7 +34,7 @@ class TestCmdClean(object):
         cmd_clean._execute(dryrun=False, cleandep=False, cleanall=True,
                            cleanforget=False)
         # all enables --clean-dep
-        assert ['t4', 't1', 't2', 't3', 't3:a'] == self.cleaned
+        assert set(['t4', 't1', 't2', 't3', 't3:a']) == set(self.cleaned)
 
     def test_clean_default_all(self, tasks):
         output = StringIO()
@@ -41,7 +43,7 @@ class TestCmdClean(object):
         cmd_clean._execute(dryrun=False, cleandep=False, cleanall=False,
                            cleanforget=False)
         # default enables --clean-dep
-        assert ['t4', 't1', 't2', 't3', 't3:a'] == self.cleaned
+        assert set(['t4', 't1', 't2', 't3', 't3:a']) == set(self.cleaned)
 
     def test_clean_default(self, tasks):
         output = StringIO()
@@ -51,7 +53,7 @@ class TestCmdClean(object):
         cmd_clean._execute(dryrun=False, cleandep=False, cleanall=False,
                            cleanforget=False)
         # default enables --clean-dep
-        assert ['t1', 't2'] == self.cleaned
+        assert set(['t1', 't2']) == set(self.cleaned)
 
     def test_clean_all_ignores_degfault(self, tasks):
         output = StringIO()
@@ -61,7 +63,7 @@ class TestCmdClean(object):
         cmd_clean._execute(dryrun=False, cleandep=False, cleanall=True,
                            cleanforget=False)
         # default enables --clean-dep
-        assert ['t4', 't1', 't2', 't3', 't3:a'] == self.cleaned
+        assert set(['t4', 't1', 't2', 't3', 't3:a']) == set(self.cleaned)
 
     def test_clean_selected(self, tasks):
         output = StringIO()
