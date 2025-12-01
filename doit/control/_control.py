@@ -8,6 +8,7 @@ from ..task import Task, DelayedLoaded
 from ..loader import generate_tasks
 from .selector import TaskSelector, RegexGroup
 from .types import TaskRunStatus
+from .registries import TargetRegistry
 
 
 class TaskControl(object):
@@ -25,12 +26,14 @@ class TaskControl(object):
     @ivar tasks: (dict) Key: task name ([taskgen.]name)
                                Value: L{Task} instance
     @ivar targets: (dict) Key: fileName
-                          Value: task_name
+                          Value: task_name (legacy, for backward compat)
+    @ivar targets_registry: (TargetRegistry) Registry for Target objects
     """
 
     def __init__(self, task_list, auto_delayed_regex=False):
         self.tasks = OrderedDict()
-        self.targets = {}
+        self.targets = {}  # Legacy dict for string targets
+        self.targets_registry = TargetRegistry()
         self.auto_delayed_regex = auto_delayed_regex
 
         # name of task in order to be executed
@@ -61,7 +64,7 @@ class TaskControl(object):
                     task.add_task_dep(wild_task)
 
         self._check_dep_names()
-        self.set_implicit_deps(self.targets, task_list)
+        self.set_implicit_deps(self.targets, self.targets_registry, task_list)
 
 
     def _check_dep_names(self):
@@ -80,41 +83,78 @@ class TaskControl(object):
 
 
     @staticmethod
-    def set_implicit_deps(targets, task_list):
+    def set_implicit_deps(targets, targets_registry, task_list):
         """set/add task_dep based on file_dep on a target from another task
-        @param targets: (dict) fileName -> task_name
+
+        @param targets: (dict) fileName -> task_name (legacy string targets)
+        @param targets_registry: (TargetRegistry) Registry for Target objects
         @param task_list: (list - Task) task with newly added file_dep
         """
-        # 1) create a dictionary associating every target->task. where the task
-        # builds that target.
+        # 1) Register all targets (both Target objects and legacy strings)
         for task in task_list:
+            # Register Target objects (new system)
+            for output in task.outputs:
+                targets_registry.register(output, task.name)
+
+            # Register legacy string targets
             for target in task.targets:
                 if target in targets:
                     msg = ("Two different tasks can't have a common target."
                            "'%s' is a target for %s and %s.")
                     raise InvalidTask(msg % (target, task.name, targets[target]))
                 targets[target] = task.name
+                # Also add to registry for unified lookup
+                targets_registry.register_legacy(target, task.name)
 
-        # 2) now go through all dependencies and check if they are target from
-        # another task.
+        # 2) Match dependencies to targets and add implicit task_dep
         # Note: When used with delayed tasks.
         #       It does NOT check if a delayed-task's target is a file_dep
         #       from another previously created task.
         for task in task_list:
-            TaskControl.add_implicit_task_dep(targets, task, task.file_dep)
+            # Legacy: match file_dep strings against targets dict
+            TaskControl.add_implicit_task_dep(
+                targets, targets_registry, task, task.file_dep)
+
+            # New: match Dependency objects against Target objects
+            TaskControl.add_implicit_task_dep_from_dependencies(
+                targets_registry, task)
 
 
     @staticmethod
-    def add_implicit_task_dep(targets, task, deps_list):
+    def add_implicit_task_dep(targets, targets_registry, task, deps_list):
         """add implicit task_dep for `task` for newly added `file_dep`
 
-        @param targets: (dict) fileName -> task_name
+        @param targets: (dict) fileName -> task_name (legacy lookup)
+        @param targets_registry: (TargetRegistry) Registry for Target objects
         @param task: (Task) task with newly added file_dep
         @param dep_list: (list - str): list of file_dep for task
         """
         for dep in deps_list:
+            # Legacy string lookup
             if dep in targets:
                 task.add_task_dep(targets[dep])
+
+    @staticmethod
+    def add_implicit_task_dep_from_dependencies(targets_registry, task):
+        """Add implicit task_dep by matching Dependency objects to Targets.
+
+        Uses TargetRegistry.find_producer() which supports both key-based
+        matching and custom Target.matches_dependency() logic.
+
+        @param targets_registry: (TargetRegistry) Registry for Target objects
+        @param task: (Task) task to check for implicit dependencies
+        """
+        from ..deps import TaskDependency
+
+        for dep in task.dependencies:
+            # Skip TaskDependency - they're already explicit task deps
+            if isinstance(dep, TaskDependency):
+                continue
+
+            # Find task that produces a matching target
+            producer = targets_registry.find_producer(dep)
+            if producer and producer != task.name:
+                task.add_task_dep(producer)
 
 
     def _get_wild_tasks(self, pattern):
@@ -160,7 +200,7 @@ class TaskControl(object):
                 raise InvalidTask(f"Task '{task.name}' has unknown setup task '{setup_task}'")
 
         # Set implicit dependencies (target -> file_dep relationships)
-        self.set_implicit_deps(self.targets, [task])
+        self.set_implicit_deps(self.targets, self.targets_registry, [task])
 
         return task
 
@@ -195,7 +235,8 @@ class TaskControl(object):
         assert self.selected_tasks is not None, \
             "must call 'process' before this"
 
-        return TaskDispatcher(self.tasks, self.targets, self.selected_tasks)
+        return TaskDispatcher(
+            self.tasks, self.targets, self.targets_registry, self.selected_tasks)
 
 
 
@@ -284,9 +325,10 @@ class TaskDispatcher(object):
 
     Note that a dispatched task might not be ready to be executed.
     """
-    def __init__(self, tasks, targets, selected_tasks):
+    def __init__(self, tasks, targets, targets_registry, selected_tasks):
         self.tasks = tasks
-        self.targets = targets
+        self.targets = targets  # Legacy dict for backward compat
+        self.targets_registry = targets_registry
         self.selected_tasks = selected_tasks
 
         self.nodes = {}  # key task-name, value: ExecNode
@@ -419,14 +461,15 @@ class TaskDispatcher(object):
             if this_loader and not this_loader.created:
                 task_gen = ref(**this_loader.kwargs) if this_loader.kwargs else ref()
                 new_tasks = generate_tasks(to_load, task_gen, ref.__doc__)
-                TaskControl.set_implicit_deps(self.targets, new_tasks)
+                TaskControl.set_implicit_deps(
+                    self.targets, self.targets_registry, new_tasks)
                 for nt in new_tasks:
                     if not nt.loader:
                         nt.loader = DelayedLoaded
                     self.tasks[nt.name] = nt
             # check itself for implicit dep (used by regex_target)
             TaskControl.add_implicit_task_dep(
-                self.targets, this_task, this_task.file_dep)
+                self.targets, self.targets_registry, this_task, this_task.file_dep)
 
             # remove file_dep since generated tasks are not required
             # to really create the target (support multiple matches)
@@ -542,7 +585,7 @@ class TaskDispatcher(object):
         old_calc_dep = waiting_node.task.calc_dep.copy()
         waiting_node.task.update_deps(values)
         TaskControl.add_implicit_task_dep(
-            self.targets, waiting_node.task,
+            self.targets, self.targets_registry, waiting_node.task,
             values.get('file_dep', []))
 
         # update node's list of non-processed dependencies

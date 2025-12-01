@@ -8,11 +8,13 @@ from collections import OrderedDict
 from collections.abc import Callable
 from pathlib import Path, PurePath
 
+import warnings
+
 from .cmdparse import CmdOption, TaskParse, normalize_option
 from .exceptions import BaseFail, InvalidTask
 from .action import create_action, PythonAction
 from .dependency import UptodateCalculator, StorageKey
-from .deps import Dependency, FileDependency, TaskDependency
+from .deps import Dependency, FileDependency, TaskDependency, Target
 
 
 def first_line(doc):
@@ -155,6 +157,7 @@ class Task(object):
                   'uptodate': ((list, tuple), ()),
                   'calc_dep': ((list, tuple), ()),
                   'targets': ((list, tuple), ()),
+                  'outputs': ((list, tuple), ()),        # Target objects
                   'setup': ((list, tuple), ()),
                   'clean': ((list, tuple), (True,)),
                   'teardown': ((list, tuple), ()),
@@ -171,7 +174,7 @@ class Task(object):
 
 
     def __init__(self, name, actions, dependencies=(), targets=(),
-                 uptodate=(),
+                 outputs=(), uptodate=(),
                  calc_dep=(), setup=(), clean=(), teardown=(),
                  subtask_of=None, has_subtask=False,
                  doc=None, params=(), pos_arg=None,
@@ -190,6 +193,7 @@ class Task(object):
         self.check_attr(name, 'uptodate', uptodate, self.valid_attr['uptodate'])
         self.check_attr(name, 'calc_dep', calc_dep, self.valid_attr['calc_dep'])
         self.check_attr(name, 'targets', targets, self.valid_attr['targets'])
+        self.check_attr(name, 'outputs', outputs, self.valid_attr['outputs'])
         self.check_attr(name, 'setup', setup, self.valid_attr['setup'])
         self.check_attr(name, 'clean', clean, self.valid_attr['clean'])
         self.check_attr(name, 'teardown', teardown, self.valid_attr['teardown'])
@@ -239,6 +243,7 @@ class Task(object):
         self.uptodate = self._init_uptodate(uptodate)
 
         self.targets = self._init_targets(targets)
+        self._outputs = self._init_outputs(name, outputs)
         self.subtask_of = subtask_of
         self.has_subtask = has_subtask
         self.result = None
@@ -345,6 +350,26 @@ class Task(object):
                 raise InvalidTask(msg % (self.name, target, type(target)))
         return targets
 
+    def _init_outputs(self, task_name, items):
+        """Validate and initialize outputs (Target objects).
+
+        @param task_name: Name of task (for error messages)
+        @param items: List of Target objects
+        @return: List of validated Target objects
+        @raises InvalidTask: If any item is not a Target instance
+        """
+        outputs = []
+        for output in items:
+            if not isinstance(output, Target):
+                msg = ("%s. outputs must be Target objects. Got '%r' (%s)")
+                raise InvalidTask(msg % (task_name, output, type(output)))
+            outputs.append(output)
+        return outputs
+
+    @property
+    def outputs(self):
+        """Return list of Target objects (task outputs)."""
+        return self._outputs
 
     def _init_uptodate(self, items):
         """wrap uptodate callables"""
