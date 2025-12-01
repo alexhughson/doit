@@ -130,7 +130,43 @@ Run from terminal::
 YAML Task Definition
 ====================
 
-Define build systems without Python code using ``doit.yaml``:
+The easiest way to use doit is with a ``doit.yaml`` file. Define your build
+system declaratively without writing any Python code.
+
+Quick Start
+-----------
+
+1. Install doit with YAML support::
+
+    pip install doit[yaml]
+
+2. Create a ``doit.yaml`` file in your project::
+
+    # doit.yaml
+    generators:
+      - name: "hello"
+        inputs:
+          source: "input.txt"
+        outputs:
+          - "output.txt"
+        action: "cat {source} | tr a-z A-Z > {out_0}"
+
+3. Create an input file::
+
+    echo "hello world" > input.txt
+
+4. Run::
+
+    doit-yaml
+
+That's it! The task runs, creating ``output.txt`` with uppercase content.
+Run again and it skips (already up-to-date). Modify ``input.txt`` and it re-runs.
+
+Pattern Matching
+----------------
+
+The real power comes from **pattern-based generators**. Use ``<name>`` placeholders
+to match multiple files and generate tasks automatically:
 
 .. code:: yaml
 
@@ -142,6 +178,106 @@ Define build systems without Python code using ``doit.yaml``:
         - "build/<module>.o"
       action: "gcc -c {source} -o {out_0}"
 
+Given files ``src/main.c`` and ``src/utils.c``, this generates two tasks:
+``compile:main`` and ``compile:utils``.
+
+**Multi-dimensional patterns** create cross-products:
+
+.. code:: yaml
+
+  generators:
+    - name: "compile:<arch>:<module>"
+      inputs:
+        source: "src/<arch>/<module>.c"
+      outputs:
+        - "build/<arch>/<module>.o"
+      action: "gcc -c {source} -o {out_0}"
+
+Given ``src/x86/main.c``, ``src/x86/utils.c``, and ``src/arm/main.c``,
+this generates three tasks: ``compile:x86:main``, ``compile:x86:utils``,
+``compile:arm:main``.
+
+Variable Reference
+------------------
+
+In your ``action``, you can use these variables:
+
+=================  ================================================
+Variable           Description
+=================  ================================================
+``{input_label}``  Path to input (e.g., ``{source}``, ``{config}``)
+``{out_0}``        First output path
+``{out_1}``        Second output path (and so on)
+``{capture}``      Captured value (e.g., ``{module}``, ``{arch}``)
+=================  ================================================
+
+Variables work as both format strings and environment variables::
+
+  # These are equivalent:
+  action: "echo {source}"
+  action: "echo $source"
+
+For **list inputs** (multiple files), paths are space-separated::
+
+  action: "cat {files} > {out_0}"  # files="a.txt b.txt c.txt"
+
+Input Types
+-----------
+
+**Simple string** (file input)::
+
+  inputs:
+    source: "src/<module>.c"
+
+**List input** (collect multiple files)::
+
+  inputs:
+    files:
+      pattern: "data/*.csv"
+      is_list: true
+
+**Optional input**::
+
+  inputs:
+    config:
+      pattern: "config/<module>.json"
+      required: false
+
+**Directory input** (for outputs you don't know ahead of time)::
+
+  inputs:
+    generated:
+      type: directory
+      pattern: "generated/<stage>/"
+
+**S3 input** (requires ``pip install doit[s3]``)::
+
+  inputs:
+    data:
+      type: s3
+      pattern: "raw/<dataset>.parquet"
+      bucket: "my-bucket"
+      profile: "dev"
+
+Complete Example: C Build System
+--------------------------------
+
+.. code:: yaml
+
+  # doit.yaml
+  config:
+    base_path: .
+
+  generators:
+    # Compile each .c file to .o
+    - name: "compile:<module>"
+      inputs:
+        source: "src/<module>.c"
+      outputs:
+        - "build/<module>.o"
+      action: "mkdir -p build && gcc -c {source} -o {out_0}"
+
+    # Link all .o files into executable
     - name: "link"
       inputs:
         objects:
@@ -149,22 +285,96 @@ Define build systems without Python code using ``doit.yaml``:
           is_list: true
       outputs:
         - "bin/program"
-      action: "gcc {objects} -o {out_0}"
+      action: "mkdir -p bin && gcc {objects} -o {out_0}"
 
-Run with::
+Run::
 
-  $ pip install doit[yaml]
   $ doit-yaml
+  Running compile:main...
+  Running compile:utils...
+  Running link...
+  Completed 3 tasks
 
-  # Or preview without executing
-  $ doit-yaml --dry-run
+Multi-Stage Pipeline
+--------------------
 
-Features:
+Outputs from one generator automatically trigger the next. This pipeline
+extracts, transforms, and loads data:
 
-- **Pattern-based generators**: Use ``<capture>`` placeholders to match files dynamically
-- **Variable injection**: Input paths available as ``{source}`` format strings and ``$source`` env vars
-- **Reactive execution**: Outputs from one stage automatically trigger the next stage
-- **Multiple input types**: Files, directories, S3 objects
+.. code:: yaml
+
+  generators:
+    # Stage 1: Extract archives
+    - name: "extract:<archive>"
+      inputs:
+        zip: "downloads/<archive>.zip"
+      outputs:
+        - path: "extracted/<archive>/"
+          type: directory
+      action: "unzip -o {zip} -d extracted/{archive}/"
+
+    # Stage 2: Transform CSV files (triggered by Stage 1)
+    - name: "transform:<archive>:<file>"
+      inputs:
+        csv: "extracted/<archive>/<file>.csv"
+      outputs:
+        - "transformed/<archive>/<file>.json"
+      action: "python csv2json.py {csv} {out_0}"
+
+    # Stage 3: Aggregate (triggered by Stage 2)
+    - name: "aggregate:<archive>"
+      inputs:
+        files:
+          pattern: "transformed/<archive>/*.json"
+          is_list: true
+      outputs:
+        - "reports/<archive>.html"
+      action: "python make_report.py {files} {out_0}"
+
+When you add a new ``.zip`` file to ``downloads/``, the entire pipeline runs
+automatically.
+
+CLI Options
+-----------
+
+::
+
+  doit-yaml [options] [yaml_file]
+
+  Options:
+    yaml_file           Path to YAML file (default: doit.yaml)
+    --dry-run           Show what would run without executing
+    --max-tasks N       Limit total tasks (default: 10000)
+    --base-path PATH    Override base path for patterns
+    -v, --verbose       Print detailed progress
+
+Examples::
+
+  doit-yaml                      # Run doit.yaml in current directory
+  doit-yaml build.yaml           # Run specific file
+  doit-yaml --dry-run            # Preview tasks
+  doit-yaml -v                   # Verbose output
+
+Python API
+----------
+
+You can also use YAML definitions from Python::
+
+  from doit.yaml import run_yaml
+
+  result = run_yaml('doit.yaml')
+  print(f"Completed {result.tasks_executed} tasks")
+
+Or parse without executing::
+
+  from doit.yaml import parse_yaml_file, yaml_to_generators
+
+  config = parse_yaml_file('doit.yaml')
+  generators = yaml_to_generators(config)
+
+  for gen in generators:
+      for task in gen.generate():
+          print(f"Would run: {task.name}")
 
 See full documentation: `YAML Task Definition <http://pydoit.org/yaml.html>`_
 
