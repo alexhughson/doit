@@ -104,6 +104,85 @@ Run from terminal::
   .  draw
 
 
+YAML Task Definition
+====================
+
+For simple shell command pipelines, you can define tasks in a ``doit.yaml`` file:
+
+.. code:: yaml
+
+  generators:
+    - name: "compile:<module>"
+      inputs:
+        source: "src/<module>.c"
+      outputs:
+        - "build/<module>.o"
+      action: "gcc -c {source} -o {out_0}"
+
+    - name: "link"
+      inputs:
+        objects:
+          pattern: "build/*.o"
+          is_list: true
+      outputs:
+        - "bin/program"
+      action: "gcc {objects} -o {out_0}"
+
+Run with::
+
+  $ pip install doit[yaml]
+  $ doit-yaml
+
+Features:
+
+- **Pattern-based generators**: Use ``<capture>`` placeholders to match files dynamically
+- **Variable injection**: Input paths available as ``{source}`` format strings and ``$source`` env vars
+- **Reactive execution**: Outputs from one stage automatically trigger the next stage
+
+
+Programmatic API
+================
+
+For embedding doit in Python applications, use the programmatic API:
+
+.. code:: python
+
+  from doit.engine import DoitEngine
+  from doit.task import Task
+  from doit.deps import FileDependency, FileTarget
+
+  tasks = [
+      Task(
+          name="build",
+          actions=["gcc -o program main.c"],
+          dependencies=[FileDependency("main.c")],
+          outputs=[FileTarget("program")],
+      ),
+  ]
+
+  with DoitEngine(tasks) as engine:
+      for task in engine:
+          if task.should_run:
+              task.execute_and_submit()
+
+Pattern-based task generation:
+
+.. code:: python
+
+  from doit.taskgen import TaskGenerator, FileInput, FileOutput
+  from doit.reactive import ReactiveEngine
+
+  gen = TaskGenerator(
+      name="compile:<module>",
+      inputs={"source": FileInput("src/<module>.c")},
+      outputs=[FileOutput("build/<module>.o")],
+      action=lambda inp, out, attrs: f"gcc -c {inp['source'].path} -o {out[0]}",
+  )
+
+  engine = ReactiveEngine(generators=[gen])
+  result = engine.run()
+
+
 Project Details
 ===============
 

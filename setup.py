@@ -136,18 +136,29 @@ setup(name = 'doit',
           'Source': 'https://github.com/pydoit/doit/',
           'Tracker': 'https://github.com/pydoit/doit/issues',
       },
-      packages = ['doit'],
+      packages = [
+          'doit',
+          'doit.control',
+          'doit.engine',
+          'doit.taskgen',
+          'doit.matching',
+          'doit.reactive',
+          'doit.yaml',
+      ],
       python_requires='>=3.8',
       install_requires = ['importlib-metadata>=4.4'],
       extras_require={
           'toml': ['tomli; python_version<"3.11"'],
           # cloudpickle broken on pypy, see #409
           'cloudpickle': ['cloudpickle; platform_python_implementation!="pypy"'],
+          'yaml': ['pyyaml>=6.0'],
+          's3': ['boto3'],
       },
       long_description = long_description,
       entry_points = {
           'console_scripts': [
-              'doit = doit.__main__:main'
+              'doit = doit.__main__:main',
+              'doit-yaml = doit.yaml.runner:main',
           ]
       },
       )
